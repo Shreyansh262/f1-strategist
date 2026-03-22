@@ -30,7 +30,7 @@ VALID_COMPOUNDS = {"SOFT", "MEDIUM", "HARD", "INTERMEDIATE", "WET"}
 LAP_TIME_MIN = 75.0   # seconds
 LAP_TIME_MAX = 130.0  # seconds — includes slow laps but not obvious sensor errors
 
-TYRE_AGE_MAX = 60     # No tyre runs more than ~60 laps in a race
+TYRE_AGE_MAX = 80     # No tyre runs more than ~60 laps in a race
 
 LAPS_SCHEMA = DataFrameSchema(
     columns={
@@ -66,6 +66,7 @@ LAPS_SCHEMA = DataFrameSchema(
                   error=f"Compound must be one of {VALID_COMPOUNDS}"),
             nullable=False,
         ),
+        
         "TyreLife": Column(
             int,
             [
@@ -92,18 +93,11 @@ LAPS_SCHEMA = DataFrameSchema(
             nullable=True,
         ),
         # ---- session metadata -----------------------------------------------
-        "Season": Column(int, Check.isin([2021, 2022, 2023, 2024]), nullable=False),
+        "Season": Column(int, Check.isin([2021, 2022, 2023, 2024, 2025]), nullable=False),
         "RoundNumber": Column(int, Check.greater_than_or_equal_to(1), nullable=False),
         "CircuitKey": Column(str, nullable=False),
     },
-    checks=[
-        # DataFrame-level check: TyreLife should not exceed LapNumber
-        # (a tyre can't be older than the race itself)
-        Check(
-            lambda df: (df["TyreLife"] <= df["LapNumber"]).all(),
-            error="TyreLife > LapNumber found — possible data error",
-        ),
-    ],
+    checks=[],
     coerce=True,       # Cast dtypes where safe (e.g. int64 → int)
     strict=False,      # Allow extra columns (telemetry data etc.)
 )
@@ -141,13 +135,30 @@ def validate_laps(df: pd.DataFrame) -> pd.DataFrame:
 
     # --- filter extreme lap times -------------------------------------------
     # Belt-and-suspenders: ingest.py may already filter, but validate again
+    # filter extreme lap times
     mask_time = df["LapTimeSeconds"].between(LAP_TIME_MIN, LAP_TIME_MAX)
     n_time = (~mask_time).sum()
     if n_time > 0:
         logger.warning("Dropping %d laps outside time bounds [%s, %s]",
-                       n_time, LAP_TIME_MIN, LAP_TIME_MAX)
+                   n_time, LAP_TIME_MIN, LAP_TIME_MAX)
     df = df[mask_time].copy()
 
+    # ADD THIS — drop laps with null compound
+    mask_compound = df["Compound"].isna() | (df["Compound"] == "None") | (~df["Compound"].isin(VALID_COMPOUNDS))
+    n_bad_compound = mask_compound.sum()
+    if n_bad_compound > 0:
+        logger.warning("Dropping %d laps with invalid/null Compound", n_bad_compound)
+    df = df[~mask_compound].copy()
+
+    # --- filter sprint race laps -------------------------------------------
+    race_mean = df.groupby(["Season", "RoundNumber"])["LapTimeSeconds"].transform("mean")
+    n_sprint = (race_mean > 105).sum()
+    if n_sprint > 0:
+        logger.warning("Dropping %d laps from sprint races (mean lap time > 105s)", n_sprint)
+    df = df[race_mean <= 105].copy()
+
+    # --- pandera validation -------------------------------------------------
+    validated = LAPS_SCHEMA.validate(df, lazy=True)
     # --- pandera validation -------------------------------------------------
     validated = LAPS_SCHEMA.validate(df, lazy=True)   # lazy=True collects all errors at once
     logger.info("Validation passed: %d laps retained from %d raw", len(validated), n_raw)

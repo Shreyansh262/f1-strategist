@@ -49,18 +49,13 @@ def fetch_session(
 def extract_laps(session: fastf1.core.Session) -> pd.DataFrame:
     """Extract lap-level features from a loaded session.
 
-    Args:
-        session: A loaded FastF1 Session.
-
-    Returns:
-        DataFrame with one row per lap, key columns only.
+    Columns are named to match validate.py schema:
+        Season, RoundNumber, CircuitKey, TrackTemp, AirTemp
     """
     laps = session.laps.copy()
 
-    # Keep only accurate laps (no pit in/out, safety car, VSC laps)
     laps = laps[laps["IsPersonalBest"].notna() | laps["LapTime"].notna()]
 
-    # Core columns we need
     keep_cols = [
         "Driver", "DriverNumber", "Team",
         "LapNumber", "LapTime",
@@ -69,25 +64,37 @@ def extract_laps(session: fastf1.core.Session) -> pd.DataFrame:
         "PitOutTime", "PitInTime",
         "TrackStatus",
     ]
-    # Only keep columns that actually exist (FastF1 version differences)
     keep_cols = [c for c in keep_cols if c in laps.columns]
     laps = laps[keep_cols].copy()
 
-    # Convert LapTime to seconds (float)
     if "LapTime" in laps.columns:
         laps["LapTimeSeconds"] = laps["LapTime"].dt.total_seconds()
 
-    # Add session metadata
-    laps["Year"] = session.event["EventDate"].year
-    laps["Round"] = session.event["RoundNumber"]
-    laps["Circuit"] = session.event["EventName"]
+    # ── Column names must match validate.py schema ────────────────────────
+    laps["Season"]      = session.event["EventDate"].year
+    laps["RoundNumber"] = session.event["RoundNumber"]
+    laps["CircuitKey"]  = session.event["EventName"]
 
-    # Flag pit laps (pit in OR pit out on this lap)
     laps["IsPitLap"] = laps["PitInTime"].notna() | laps["PitOutTime"].notna()
+
+    # ── Merge weather (TrackTemp, AirTemp) onto laps ─────────────────────
+    # Weather is time-series; take the median values for the session
+    # (lap-accurate merge requires lap timestamps — median is a safe fallback)
+    weather = session.weather_data
+    if weather is not None and len(weather) > 0:
+        laps["TrackTemp"] = weather["TrackTemp"].median()
+        laps["AirTemp"]   = weather["AirTemp"].median()
+    else:
+        laps["TrackTemp"] = None
+        laps["AirTemp"]   = None
+
+    # Cast TyreLife to int (FastF1 returns float)
+    laps["TyreLife"] = laps["TyreLife"].fillna(0).astype(int)
+    # Cast LapNumber to int
+    laps["LapNumber"] = laps["LapNumber"].fillna(0).astype(int)
 
     logger.info(f"Extracted {len(laps)} laps from {session.event['EventName']}")
     return laps
-
 
 def fetch_weather(session: fastf1.core.Session) -> pd.DataFrame:
     """Extract weather data (track/air temp, humidity) from session.

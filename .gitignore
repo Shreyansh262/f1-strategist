@@ -1,11 +1,52 @@
+# ── Virtual environment ───────────────────────────────────────────────────────
 venv/
-cache/
-mlruns/
-models/*.joblib
-data/
+.venv/
+env/
+
+# ── Python cache ──────────────────────────────────────────────────────────────
 __pycache__/
+*.py[cod]
+*.pyo
 *.pyc
+*$py.class
+
+# ── Data — never commit raw parquet files ─────────────────────────────────────
+data/
+
+# ── FastF1 cache — large binary files ─────────────────────────────────────────
+cache/
+
+# ── Trained model binaries ────────────────────────────────────────────────────
+models/*.joblib
+models/*.pkl
+
+# ── MLflow experiment tracking ────────────────────────────────────────────────
+mlruns/
+
+# ── Reports — generated artefacts (optional: remove if you want them in repo) ─
+# reports/
+
+# ── Environment variables ─────────────────────────────────────────────────────
 .env
+.env.*
+
+# ── OS files ──────────────────────────────────────────────────────────────────
 .DS_Store
+Thumbs.db
+
+# ── VS Code ───────────────────────────────────────────────────────────────────
+.vscode/
+
+# ── Build / packaging ─────────────────────────────────────────────────────────
 *.egg-info/
 dist/
+build/
+*.egg
+
+# ── Pytest ────────────────────────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ── Jupyter ───────────────────────────────────────────────────────────────────
+.ipynb_checkpoints/

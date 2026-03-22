@@ -1,0 +1,23 @@
+CircuitKey,split,bayesian_ridge_mae,random_forest_mae,n_laps
+British Grand Prix,val_2023,3.4091,0.5087,1730
+Miami Grand Prix,val_2023,2.7016,0.5548,2204
+Abu Dhabi Grand Prix,val_2023,5.6507,0.5963,2212
+Spanish Grand Prix,val_2023,8.0367,0.6252,2530
+United States Grand Prix,val_2023,5.4894,0.656,1922
+Azerbaijan Grand Prix,val_2023,10.7474,0.6576,1746
+Belgian Grand Prix,val_2023,14.7128,0.6744,1518
+Saudi Arabian Grand Prix,val_2023,4.6579,0.7851,1722
+Japanese Grand Prix,val_2023,3.9143,0.7925,1528
+São Paulo Grand Prix,val_2023,5.9235,0.8673,1780
+Mexico City Grand Prix,val_2023,4.2862,0.889,2400
+Australian Grand Prix,val_2023,10.4717,0.9153,1724
+Singapore Grand Prix,val_2023,7.296,0.9196,2012
+Bahrain Grand Prix,val_2023,3.6627,0.9435,2002
+Italian Grand Prix,val_2023,11.1608,0.9496,1854
+Canadian Grand Prix,val_2023,8.35,0.9616,2430
+Las Vegas Grand Prix,val_2023,4.5886,0.9678,1614
+Hungarian Grand Prix,val_2023,3.7814,1.0499,2462
+Qatar Grand Prix,val_2023,9.4978,1.1261,1812
+Dutch Grand Prix,val_2023,8.4098,1.2216,2262
+Monaco Grand Prix,val_2023,10.2841,1.2324,2904
+Austrian Grand Prix,val_2023,13.0736,3.374,160

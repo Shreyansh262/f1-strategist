@@ -4,9 +4,9 @@ src/pipeline/splits.py
 Season-aware temporal train / validation / test splits.
 
 Split design:
-    Train : 2021 + 2022  (model learns from two full seasons)
-    Val   : 2023          (hyperparameter tuning, early stopping, threshold selection)
-    Test  : 2024          (blind evaluation — touch this ONCE at final evaluation)
+    Train : 2022 + 2023  (model learns from two full seasons)
+    Val   : 2024          (hyperparameter tuning, early stopping, threshold selection)
+    Test  : 2025          (blind evaluation — touch this ONCE at final evaluation)
 
 Why seasons, not random rows?
     F1 lap times are non-stationary across seasons: regulation changes (e.g. 2022
@@ -29,9 +29,9 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-TRAIN_SEASONS: Final[list[int]] = [2021, 2022]
-VAL_SEASONS: Final[list[int]] = [2023]
-TEST_SEASONS: Final[list[int]] = [2024]
+TRAIN_SEASONS: Final[list[int]] = [2022, 2023]
+VAL_SEASONS: Final[list[int]] = [2024]
+TEST_SEASONS: Final[list[int]] = [2025]
 
 
 def make_splits(
@@ -48,11 +48,11 @@ def make_splits(
     df : pd.DataFrame
         Features DataFrame from build_features(). Must contain a 'Season' column.
     train_seasons : list[int]
-        Seasons to include in the training set. Default: [2021, 2022].
+        Seasons to include in the training set. Default: [2022, 2023].
     val_seasons : list[int]
-        Seasons to include in the validation set. Default: [2023].
+        Seasons to include in the validation set. Default: [2024].
     test_seasons : list[int]
-        Seasons to include in the test set. Default: [2024].
+        Seasons to include in the test set. Default: [2025].
 
     Returns
     -------
