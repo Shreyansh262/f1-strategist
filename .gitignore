@@ -1,0 +1,11 @@
+venv/
+cache/
+mlruns/
+models/*.joblib
+data/
+__pycache__/
+*.pyc
+.env
+.DS_Store
+*.egg-info/
+dist/
