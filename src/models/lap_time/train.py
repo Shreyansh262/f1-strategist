@@ -59,11 +59,11 @@ TARGET: Final[str] = "LapTimeSeconds"
 # Full Optuna sweep deferred to v2 (see roadmap)
 # ---------------------------------------------------------------------------
 RF_PARAM_GRID: Final[list[dict]] = [
-    {"n_estimators": 100, "max_depth": 6,    "min_samples_leaf": 5},
-    {"n_estimators": 100, "max_depth": 10,   "min_samples_leaf": 5},
-    {"n_estimators": 200, "max_depth": 10,   "min_samples_leaf": 3},
     {"n_estimators": 200, "max_depth": 15,   "min_samples_leaf": 3},
-    {"n_estimators": 300, "max_depth": 15,   "min_samples_leaf": 2},
+    {"n_estimators": 200, "max_depth": 20,   "min_samples_leaf": 2},
+    {"n_estimators": 300, "max_depth": 20,   "min_samples_leaf": 2},
+    {"n_estimators": 300, "max_depth": None, "min_samples_leaf": 2},  # fully grown
+    {"n_estimators": 300, "max_depth": None, "min_samples_leaf": 5},  # grown but regularised
 ]
 
 
@@ -289,9 +289,9 @@ def train(parquet_glob: str = "data/raw/*.parquet") -> None:
 
     train_df, val_df, test_df = make_splits(
         features_df,
-        train_seasons=[2022, 2023],
-        val_seasons=[2024],
-        test_seasons=[2025],
+        train_seasons=[2022, 2023, 2024],
+        val_seasons=[2025],
+        test_seasons=[2026],
     )
     assert_no_leakage(train_df, val_df, test_df)
 

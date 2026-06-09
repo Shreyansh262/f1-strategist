@@ -5,22 +5,26 @@ All feature engineering for the F1 AI Race Strategist.
 Every feature here must be available at prediction time during a race —
 no future information, no post-race data.
 
-Leakage audit (checked for every feature):
-- LapNumber          ✓  known at start of lap
-- TyreLife           ✓  known — you know how many laps the tyre has done
-- CompoundEncoded    ✓  known — tyre is already fitted
-- FuelLoad           ✓  estimated from lap number (decreases ~1.5 kg/lap)
-- TrackTemp          ✓  live sensor during lap
-- AirTemp            ✓  live sensor during lap
-- TyreAgeSq          ✓  derived from TyreLife — no future info
-- IsFirstStint       ✓  known from lap 1 flag or TyreLife reset
+Leakage audit:
+- CircuitEncoded    ✓  circuit identity known before race start
+- CompoundEncoded   ✓  tyre is already fitted
+- Era               ✓  regulation era fixed for entire season
+- TyreLife          ✓  known — laps done on current set
+- FuelLoad          ✓  estimated from lap number (~1.5 kg/lap)
+- TrackTemp         ✓  live sensor during lap
+- AirTemp           ✓  live sensor during lap
+- TyreAgeSq         ✓  derived from TyreLife
+- StintPhase        ✓  derived from TyreLife
+- StintID           ✓  derived from tyre resets (tyre model only)
 
 Usage:
     from src.pipeline.features import build_features
     features_df = build_features(validated_df)
 """
 
+import json
 import logging
+from pathlib import Path
 from typing import Final
 
 import numpy as np
@@ -29,36 +33,35 @@ import pandas as pd
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
+# Paths
+# ---------------------------------------------------------------------------
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+MAPPINGS_DIR = PROJECT_ROOT / "data" / "mappings"
+
+# ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-FUEL_LOAD_START_KG: Final[float] = 110.0   # Approximate full fuel load at race start
-FUEL_BURN_PER_LAP: Final[float] = 1.5      # kg per lap (F1 regulations ~105 kg / ~70 laps)
-FUEL_EFFECT_PER_KG: Final[float] = 0.03    # seconds per kg (well-established in literature)
+FUEL_LOAD_START_KG: Final[float] = 110.0
+FUEL_BURN_PER_LAP:  Final[float] = 1.5
+FUEL_EFFECT_PER_KG: Final[float] = 0.03
 
-# Ordinal encoding: captures tyre performance hierarchy meaningfully
 COMPOUND_ORDER: Final[dict[str, int]] = {
-    "SOFT": 0,
-    "MEDIUM": 1,
-    "HARD": 2,
-    "INTERMEDIATE": 3,
-    "WET": 4,
+    "SOFT": 0, "MEDIUM": 1, "HARD": 2, "INTERMEDIATE": 3, "WET": 4,
 }
 
-# Track temperature imputation fallbacks (median values from FastF1 EDA)
-TRACK_TEMP_FALLBACK: Final[float] = 35.0   # °C
-AIR_TEMP_FALLBACK: Final[float] = 25.0     # °C
+# 0 = ground-effect era (2022-2025), 1 = active aero era (2026+)
+ERA_BOUNDARY: Final[int] = 2026
+
+TRACK_TEMP_FALLBACK: Final[float] = 35.0
+AIR_TEMP_FALLBACK:   Final[float] = 25.0
 
 
 # ---------------------------------------------------------------------------
-# Individual feature transforms — each is a pure function on a DataFrame
+# Individual feature transforms
 # ---------------------------------------------------------------------------
 
 def add_compound_encoding(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Ordinal-encode tyre compound.
-    Soft=0, Medium=1, Hard=2 preserves degradation hierarchy.
-    Intermediate and Wet treated separately (rarely appear in dry races).
-    """
+    """Ordinal-encode tyre compound. SOFT=0 MEDIUM=1 HARD=2 INT=3 WET=4."""
     df = df.copy()
     df["CompoundEncoded"] = df["Compound"].map(COMPOUND_ORDER)
     n_unknown = df["CompoundEncoded"].isna().sum()
@@ -67,15 +70,70 @@ def add_compound_encoding(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def add_circuit_encoding(
+    df: pd.DataFrame,
+    mapping: dict[str, int] | None = None,
+) -> pd.DataFrame:
+    """
+    Label-encode CircuitKey using a frozen mapping dictionary.
+
+    Training mode (mapping=None):
+        Builds mapping from df sorted alphabetically, saves to
+        data/mappings/circuit_map.json. Call this once during training.
+
+    Inference mode (mapping=dict):
+        Pass the loaded circuit_map.json. Circuits not in the mapping
+        receive sentinel value -1.
+
+    Leakage check: circuit identity is known before race start — no future
+    information used. Frozen mapping ensures train/inference consistency.
+    """
+    df = df.copy()
+
+    if mapping is None:
+        unique_circuits = sorted(df["CircuitKey"].dropna().unique())
+        mapping = {c: i for i, c in enumerate(unique_circuits)}
+        MAPPINGS_DIR.mkdir(parents=True, exist_ok=True)
+        map_path = MAPPINGS_DIR / "circuit_map.json"
+        with open(map_path, "w") as f:
+            json.dump(mapping, f, indent=2)
+        logger.info(
+            "Built and saved circuit mapping (%d circuits) → %s",
+            len(mapping), map_path,
+        )
+
+    df["CircuitEncoded"] = df["CircuitKey"].map(mapping).fillna(-1).astype(int)
+
+    n_unseen = (df["CircuitEncoded"] == -1).sum()
+    if n_unseen > 0:
+        logger.warning(
+            "%d rows have unseen CircuitKey (encoded as -1). "
+            "New circuits may need adding to circuit_map.json.",
+            n_unseen,
+        )
+    return df
+
+
+def add_era_feature(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Binary regulation era feature.
+        Era 0: ground-effect regulations (2022-2025)
+        Era 1: active aero regulations   (2026+)
+
+    Leakage check: era is fixed for the whole season, known before race start.
+    Key feature for the TabTransformer — the era embedding learns a 32-dim
+    representation of each regulation era.
+    """
+    df = df.copy()
+    df["Era"] = (df["Season"] >= ERA_BOUNDARY).astype(int)
+    return df
+
+
 def add_fuel_load(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Estimate fuel load in kg from lap number.
-
-    Fuel load decreases linearly at ~1.5 kg/lap from a starting load of ~110 kg.
-    This is a known-at-race-time estimate — real teams use fuel flow sensors,
-    but this proxy is standard in the literature and defensible.
-
-    Fuel effect on lap time: ~0.03 s per kg (approximately 3 seconds total over a race).
+    Estimate fuel load (kg) from lap number.
+    ~1.5 kg/lap burn from 110 kg starting load.
+    FuelEffect: lap time penalty in seconds (~0.03 s/kg → ~3s total over race).
     """
     df = df.copy()
     df["FuelLoad"] = np.maximum(
@@ -88,17 +146,13 @@ def add_fuel_load(df: pd.DataFrame) -> pd.DataFrame:
 
 def add_tyre_age_features(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Derive polynomial tyre age features.
-
-    TyreLife:    raw laps on current set (already in validated DataFrame)
-    TyreAgeSq:   captures the accelerating degradation curve (quadratic term)
-    TyreAgeCubed: for compounds with cliff-edge degradation (primarily Soft)
-
-    Interview note: using polynomial terms explicitly is more interpretable than
-    letting the RF split on them implicitly — SHAP values are cleaner.
+    Polynomial tyre age features.
+    TyreAgeSq:    accelerating degradation (quadratic term).
+    TyreAgeCubed: cliff-edge degradation on Soft compounds.
+    Explicit polynomial terms → cleaner SHAP values than implicit RF splits.
     """
     df = df.copy()
-    df["TyreAgeSq"] = df["TyreLife"] ** 2
+    df["TyreAgeSq"]    = df["TyreLife"] ** 2
     df["TyreAgeCubed"] = df["TyreLife"] ** 3
     return df
 
@@ -106,10 +160,7 @@ def add_tyre_age_features(df: pd.DataFrame) -> pd.DataFrame:
 def add_interaction_features(df: pd.DataFrame) -> pd.DataFrame:
     """
     Compound × TyreLife interaction.
-
-    A Soft tyre degrades much faster than a Hard at high TyreLife — this
-    explicit interaction term captures that without relying on the RF to
-    discover it through deep splits.
+    Soft degrades faster than Hard at the same TyreLife — captured explicitly.
     """
     df = df.copy()
     df["CompoundXTyreLife"] = df["CompoundEncoded"] * df["TyreLife"]
@@ -118,32 +169,21 @@ def add_interaction_features(df: pd.DataFrame) -> pd.DataFrame:
 
 def impute_weather(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Impute missing TrackTemp and AirTemp with circuit-level medians,
-    falling back to global constants.
-
-    Imputation is done BEFORE the train/val/test split is applied, but
-    the imputation values are derived per-circuit from the full DataFrame.
-    This is acceptable because temperature medians per circuit do not leak
-    lap time targets — they are environmental constants.
+    Impute missing TrackTemp / AirTemp with per-circuit medians,
+    falling back to global constants if a circuit has all nulls.
     """
     df = df.copy()
-
     for col, fallback in [("TrackTemp", TRACK_TEMP_FALLBACK),
-                           ("AirTemp", AIR_TEMP_FALLBACK)]:
+                           ("AirTemp",   AIR_TEMP_FALLBACK)]:
         if col not in df.columns:
             logger.warning("%s not found — using global fallback %.1f", col, fallback)
             df[col] = fallback
             continue
-
         n_missing = df[col].isna().sum()
         if n_missing == 0:
             continue
-
-        # Impute with per-circuit median
         circuit_medians = df.groupby("CircuitKey")[col].transform("median")
         df[col] = df[col].fillna(circuit_medians)
-
-        # If still missing (circuit had all nulls), use global fallback
         still_missing = df[col].isna().sum()
         if still_missing > 0:
             logger.warning(
@@ -151,80 +191,99 @@ def impute_weather(df: pd.DataFrame) -> pd.DataFrame:
                 still_missing, col, fallback,
             )
             df[col] = df[col].fillna(fallback)
-
     return df
 
 
 def add_lap_position_features(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Race progress features: normalised lap number and stint phase.
-
-    NormLapNumber: lap as a fraction of total race laps (0 → 1)
-                   estimated from max LapNumber per race.
-    StintPhase:    early (0–30% tyre life) / mid (30–60%) / late (60%+) encoded 0/1/2
+    NormLapNumber: lap as fraction of race length (0 → 1).
+    StintPhase:    0=early (TyreLife ≤8), 1=mid (9-15), 2=late (>15).
     """
     df = df.copy()
-
-    # Normalise lap number within each race
     max_lap = df.groupby(["Season", "RoundNumber"])["LapNumber"].transform("max")
     df["NormLapNumber"] = df["LapNumber"] / max_lap
-
-    # Stint phase (0 = early, 1 = mid, 2 = late)
-    # Boundaries based on tyre life percentage relative to typical stint length
-    # Typical stint: ~20–25 laps → thresholds at 8 and 15 laps
     df["StintPhase"] = pd.cut(
-        df["TyreLife"],
-        bins=[0, 8, 15, 999],
-        labels=[0, 1, 2],
+        df["TyreLife"], bins=[0, 8, 15, 999], labels=[0, 1, 2],
     ).astype(int)
+    return df
 
+
+def add_stint_id(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Assign stint IDs per driver per race.
+    New stint when TyreLife resets (decreases) OR Compound changes.
+
+    Used by the tyre degradation model (fit.py) to isolate continuous stints.
+    NOT included in MODEL_FEATURE_COLUMNS — not a lap time predictor feature.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Must contain Season, RoundNumber, Driver, LapNumber, TyreLife, Compound.
+
+    Returns
+    -------
+    pd.DataFrame with 'StintID' column added (int, 1-indexed per driver per race).
+    """
+    df = df.copy()
+    df = df.sort_values(["Season", "RoundNumber", "Driver", "LapNumber"])
+    grp            = df.groupby(["Season", "RoundNumber", "Driver"])
+    tyre_reset     = grp["TyreLife"].diff() < 0
+    compound_change = grp["Compound"].shift() != df["Compound"]
+    new_stint      = (tyre_reset | compound_change).fillna(True)
+    df["StintID"]  = (
+        new_stint
+        .groupby([df["Season"], df["RoundNumber"], df["Driver"]])
+        .cumsum()
+        .astype(int)
+    )
     return df
 
 
 # ---------------------------------------------------------------------------
-# Master transform — apply all steps in order
+# Column lists — source of truth
 # ---------------------------------------------------------------------------
 
 FEATURE_COLUMNS: Final[list[str]] = [
     # Target
     "LapTimeSeconds",
-    # Identity (for grouping / eval — not model inputs)
-    "Driver",
-    "Season",
-    "RoundNumber",
-    "CircuitKey",
-    "LapNumber",
+    # Identity (grouping / eval — NOT model inputs)
+    "Driver", "Season", "RoundNumber", "CircuitKey", "LapNumber",
     # Model features
-    "CompoundEncoded",
-    "TyreLife",
-    "TyreAgeSq",
-    "TyreAgeCubed",
-    "CompoundXTyreLife",
-    "FuelLoad",
-    "FuelEffect",
-    "TrackTemp",
-    "AirTemp",
-    "NormLapNumber",
-    "StintPhase",
+    "CircuitEncoded", "CompoundEncoded", "Era",
+    "TyreLife", "TyreAgeSq", "TyreAgeCubed",
+    "CompoundXTyreLife", "FuelLoad", "FuelEffect",
+    "TrackTemp", "AirTemp", "NormLapNumber", "StintPhase",
 ]
 
 MODEL_FEATURE_COLUMNS: Final[list[str]] = [
     # Exactly the columns passed to model.fit() / model.predict()
-    "CompoundEncoded",
-    "TyreLife",
-    "TyreAgeSq",
-    "TyreAgeCubed",
-    "CompoundXTyreLife",
-    "FuelLoad",
-    "FuelEffect",
-    "TrackTemp",
-    "AirTemp",
-    "NormLapNumber",
-    "StintPhase",
+    "CircuitEncoded", "CompoundEncoded", "Era",
+    "TyreLife", "TyreAgeSq", "TyreAgeCubed",
+    "CompoundXTyreLife", "FuelLoad", "FuelEffect",
+    "TrackTemp", "AirTemp", "NormLapNumber", "StintPhase",
 ]
 
+# Categorical feature indices within MODEL_FEATURE_COLUMNS
+# Used by TabTransformer to route features to embedding layers
+CAT_FEATURE_INDICES: Final[list[int]] = [0, 1, 2]   # CircuitEncoded, CompoundEncoded, Era
+CONT_FEATURE_INDICES: Final[list[int]] = list(range(3, len(MODEL_FEATURE_COLUMNS)))
 
-def build_features(df: pd.DataFrame) -> pd.DataFrame:
+# Cardinalities for embedding layers
+# CircuitEncoded: 24 (23 circuits + 1 for unseen/-1 sentinel)
+# CompoundEncoded: 5 (SOFT/MEDIUM/HARD/INT/WET)
+# Era: 2 (ground-effect / active-aero)
+CAT_CARDINALITIES: Final[list[int]] = [24, 5, 2]
+
+
+# ---------------------------------------------------------------------------
+# Master transform
+# ---------------------------------------------------------------------------
+
+def build_features(
+    df: pd.DataFrame,
+    circuit_mapping: dict[str, int] | None = None,
+) -> pd.DataFrame:
     """
     Apply all feature engineering transforms in the correct order.
 
@@ -232,35 +291,37 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
     ----------
     df : pd.DataFrame
         Validated laps DataFrame from validate.py.
+    circuit_mapping : dict[str, int] | None
+        Training mode  (None)   : builds mapping from df, saves circuit_map.json.
+        Inference mode (dict)   : uses supplied mapping; unseen circuits → -1.
 
     Returns
     -------
     pd.DataFrame
-        DataFrame with all engineered features added, restricted to
-        FEATURE_COLUMNS. Rows with any NaN in model feature columns
-        are dropped with a warning.
+        Restricted to FEATURE_COLUMNS. Rows with NaN in model features dropped.
     """
     logger.info("Building features from %d rows", len(df))
 
     df = add_compound_encoding(df)
+    df = add_circuit_encoding(df, mapping=circuit_mapping)
+    df = add_era_feature(df)
     df = impute_weather(df)
     df = add_fuel_load(df)
     df = add_tyre_age_features(df)
     df = add_interaction_features(df)
     df = add_lap_position_features(df)
+    # NOTE: add_stint_id() is called separately in the tyre model pipeline only.
 
-    # Keep only the columns we need downstream
-    available = [c for c in FEATURE_COLUMNS if c in df.columns]
+    available    = [c for c in FEATURE_COLUMNS if c in df.columns]
     missing_cols = set(FEATURE_COLUMNS) - set(available)
     if missing_cols:
         logger.warning("Missing expected columns: %s", missing_cols)
     df = df[available].copy()
 
-    # Drop rows with NaN in any model feature
-    n_before = len(df)
+    n_before           = len(df)
     model_cols_present = [c for c in MODEL_FEATURE_COLUMNS if c in df.columns]
-    df = df.dropna(subset=model_cols_present)
-    n_dropped = n_before - len(df)
+    df                 = df.dropna(subset=model_cols_present)
+    n_dropped          = n_before - len(df)
     if n_dropped > 0:
         logger.warning("Dropped %d rows with NaN in model features", n_dropped)
 

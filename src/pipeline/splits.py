@@ -29,9 +29,9 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-TRAIN_SEASONS: Final[list[int]] = [2022, 2023]
-VAL_SEASONS: Final[list[int]] = [2024]
-TEST_SEASONS: Final[list[int]] = [2025]
+TRAIN_SEASONS: Final[list[int]] = [2022, 2023, 2024]
+VAL_SEASONS:   Final[list[int]] = [2025]
+TEST_SEASONS:  Final[list[int]] = [2026]
 
 
 def make_splits(

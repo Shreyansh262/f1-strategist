@@ -50,7 +50,7 @@ def extract_laps(session: fastf1.core.Session) -> pd.DataFrame:
     """Extract lap-level features from a loaded session.
 
     Columns are named to match validate.py schema:
-        Season, RoundNumber, CircuitKey, TrackTemp, AirTemp
+        Driver, Team, Season, RoundNumber, CircuitKey, TrackTemp, AirTemp
     """
     laps = session.laps.copy()
 
@@ -88,6 +88,8 @@ def extract_laps(session: fastf1.core.Session) -> pd.DataFrame:
         laps["TrackTemp"] = None
         laps["AirTemp"]   = None
 
+    # Cast Team to str (FastF1 Team field)
+    laps["Team"] = laps["Team"].astype(str)
     # Cast TyreLife to int (FastF1 returns float)
     laps["TyreLife"] = laps["TyreLife"].fillna(0).astype(int)
     # Cast LapNumber to int

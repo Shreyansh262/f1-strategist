@@ -93,7 +93,7 @@ LAPS_SCHEMA = DataFrameSchema(
             nullable=True,
         ),
         # ---- session metadata -----------------------------------------------
-        "Season": Column(int, Check.isin([2021, 2022, 2023, 2024, 2025]), nullable=False),
+        "Season": Column(int, Check.isin([2022, 2023, 2024, 2025, 2026]), nullable=False),
         "RoundNumber": Column(int, Check.greater_than_or_equal_to(1), nullable=False),
         "CircuitKey": Column(str, nullable=False),
     },
@@ -156,7 +156,12 @@ def validate_laps(df: pd.DataFrame) -> pd.DataFrame:
     if n_sprint > 0:
         logger.warning("Dropping %d laps from sprint races (mean lap time > 105s)", n_sprint)
     df = df[race_mean <= 105].copy()
-
+# --- filter unsupported seasons -------------------------------------------
+    SUPPORTED_SEASONS = {2022, 2023, 2024, 2025, 2026}
+    n_season = (~df["Season"].isin(SUPPORTED_SEASONS)).sum()
+    if n_season > 0:
+        logger.warning("Dropping %d laps from unsupported seasons (e.g. 2021)", n_season)
+    df = df[df["Season"].isin(SUPPORTED_SEASONS)].copy()
     # --- pandera validation -------------------------------------------------
     validated = LAPS_SCHEMA.validate(df, lazy=True)
     # --- pandera validation -------------------------------------------------

@@ -327,3 +327,113 @@ class TestBuildFeatures:
         original_shape = df.shape
         _ = build_features(df)
         assert df.shape == original_shape, "build_features must not mutate the input"
+
+# Add these imports at the top of test_features.py:
+from src.pipeline.features import (
+    add_circuit_encoding,
+    add_era_feature,
+    add_stint_id,
+    ERA_BOUNDARY,
+)
+
+
+class TestAddCircuitEncoding:
+
+    def test_encoding_is_consistent(self):
+        df = make_minimal_df()
+        result = add_circuit_encoding(df)
+        assert "CircuitEncoded" in result.columns
+        # Same circuit should always get the same code
+        codes = result["CircuitEncoded"].unique()
+        assert len(codes) == 1   # all rows are "bahrain"
+
+    def test_unseen_circuit_gets_minus_one(self):
+        df = make_minimal_df()
+        mapping = {"monza": 0, "monaco": 1}   # bahrain not in mapping
+        result = add_circuit_encoding(df, mapping=mapping)
+        assert (result["CircuitEncoded"] == -1).all()
+
+    def test_frozen_mapping_respected(self):
+        mapping = {"bahrain": 7}
+        df = make_minimal_df()
+        result = add_circuit_encoding(df, mapping=mapping)
+        assert (result["CircuitEncoded"] == 7).all()
+
+    def test_does_not_mutate_input(self):
+        df = make_minimal_df()
+        original_cols = set(df.columns)
+        _ = add_circuit_encoding(df)
+        assert set(df.columns) == original_cols
+
+
+class TestAddEraFeature:
+
+    def test_pre_2026_is_era_zero(self):
+        df = make_minimal_df()   # Season=2022
+        result = add_era_feature(df)
+        assert (result["Era"] == 0).all()
+
+    def test_2026_is_era_one(self):
+        df = make_minimal_df()
+        df["Season"] = ERA_BOUNDARY
+        result = add_era_feature(df)
+        assert (result["Era"] == 1).all()
+
+    def test_mixed_seasons(self):
+        df = pd.DataFrame({
+            "Driver": ["VER", "HAM"],
+            "LapNumber": [1, 1],
+            "LapTimeSeconds": [93.0, 93.0],
+            "Compound": ["SOFT", "SOFT"],
+            "TyreLife": [3, 3],
+            "TrackTemp": [38.0, 38.0],
+            "AirTemp": [28.0, 28.0],
+            "Season": [2024, 2026],
+            "RoundNumber": [1, 1],
+            "CircuitKey": ["bahrain", "bahrain"],
+        })
+        result = add_era_feature(df)
+        assert result["Era"].tolist() == [0, 1]
+
+
+class TestAddStintId:
+
+    def test_first_lap_is_stint_one(self):
+        df = make_minimal_df()
+        result = add_stint_id(df)
+        assert result["StintID"].iloc[0] == 1
+
+    def test_new_stint_on_tyre_reset(self):
+        """TyreLife going from high → low signals a pit stop → new stint."""
+        df = pd.DataFrame({
+            "Driver": ["VER"] * 4,
+            "LapNumber": [1, 2, 3, 4],
+            "LapTimeSeconds": [93.0] * 4,
+            "Compound": ["SOFT"] * 4,
+            "TyreLife": [1, 2, 1, 2],   # reset at lap 3
+            "TrackTemp": [38.0] * 4,
+            "AirTemp": [28.0] * 4,
+            "Season": [2022] * 4,
+            "RoundNumber": [1] * 4,
+            "CircuitKey": ["bahrain"] * 4,
+        })
+        result = add_stint_id(df)
+        assert result["StintID"].iloc[0] == result["StintID"].iloc[1]   # same stint
+        assert result["StintID"].iloc[2] > result["StintID"].iloc[1]    # new stint
+
+    def test_new_stint_on_compound_change(self):
+        df = pd.DataFrame({
+            "Driver": ["VER"] * 4,
+            "LapNumber": [1, 2, 3, 4],
+            "LapTimeSeconds": [93.0] * 4,
+            "Compound": ["SOFT", "SOFT", "MEDIUM", "MEDIUM"],
+            "TyreLife": [1, 2, 1, 2],
+            "TrackTemp": [38.0] * 4,
+            "AirTemp": [28.0] * 4,
+            "Season": [2022] * 4,
+            "RoundNumber": [1] * 4,
+            "CircuitKey": ["bahrain"] * 4,
+        })
+        result = add_stint_id(df)
+        assert result["StintID"].iloc[0] == result["StintID"].iloc[1]
+        assert result["StintID"].iloc[2] > result["StintID"].iloc[1]

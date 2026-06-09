@@ -102,7 +102,46 @@ def evaluate_per_circuit(
 
     return results_df
 
+def evaluate_per_era(
+    br_model: BayesianRidge,
+    br_scaler,
+    rf_model: RandomForestRegressor,
+    val_df: pd.DataFrame,
+    test_df: pd.DataFrame,
+) -> pd.DataFrame:
+    """
+    Compute MAE for both models broken down by regulation era.
+    Era 0 = 2022-2025, Era 1 = 2026+.
+    """
+    rows = []
+    for split_name, df in [("val", val_df), ("test", test_df)]:
+        if len(df) == 0:
+            continue
+        if "Era" not in df.columns:
+            logger.warning("Era column missing — skipping per-era MAE for %s", split_name)
+            continue
+        for era, group in df.groupby("Era"):
+            X, y = get_X_y(group)
+            X_scaled = br_scaler.transform(X)
+            rows.append({
+                "Era":                era,
+                "era_label":          "ground_effect" if era == 0 else "active_aero",
+                "split":              split_name,
+                "bayesian_ridge_mae": round(mean_absolute_error(y, br_model.predict(X_scaled)), 4),
+                "random_forest_mae":  round(mean_absolute_error(y, rf_model.predict(X)), 4),
+                "n_laps":             len(group),
+            })
 
+    results_df = pd.DataFrame(rows)
+    if len(results_df) == 0:
+        logger.warning("No era data found — per_era_mae.csv will be empty")
+        return results_df
+
+    out_path = REPORTS_DIR / "per_era_mae.csv"
+    results_df.to_csv(out_path, index=False)
+    logger.info("Per-era MAE saved to %s", out_path)
+    logger.info("\n%s", results_df.to_string(index=False))
+    return results_df
 # ---------------------------------------------------------------------------
 # 2. Learning curves
 # ---------------------------------------------------------------------------
@@ -278,7 +317,11 @@ def evaluate() -> None:
         # 1. Per-circuit MAE
         results_df = evaluate_per_circuit(
             br_model, br_scaler, rf_model, val_df, test_df
-        )
+        ) 
+        # After: results_df = evaluate_per_circuit(...)
+        era_df = evaluate_per_era(br_model, br_scaler, rf_model, val_df, test_df)
+        if len(era_df) > 0:
+            mlflow.log_artifact(str(REPORTS_DIR / "per_era_mae.csv"))
         mlflow.log_artifact(str(REPORTS_DIR / "per_circuit_mae.csv"))
 
         # 2. Learning curves (on train set — cross-validated)
