@@ -23,10 +23,15 @@ from src.pipeline.features import (
     FUEL_EFFECT_PER_KG,
     FUEL_LOAD_START_KG,
     MODEL_FEATURE_COLUMNS,
+    ERA_BOUNDARY,
+    add_circuit_encoding,
+    add_era_feature,
+    add_stint_id,
     add_compound_encoding,
     add_fuel_load,
     add_interaction_features,
     add_lap_position_features,
+    add_team_encoding,
     add_tyre_age_features,
     build_features,
     impute_weather,
@@ -42,6 +47,7 @@ def make_minimal_df(n: int = 5) -> pd.DataFrame:
     return pd.DataFrame(
         {
             "Driver":         ["VER", "HAM", "LEC", "NOR", "ALO"][:n],
+            "Team":           ["Red Bull", "Mercedes", "Ferrari", "McLaren", "Alpine"][:n],
             "LapNumber":      list(range(1, n + 1)),
             "LapTimeSeconds": [93.0 + i * 0.1 for i in range(n)],
             "Compound":       ["SOFT", "MEDIUM", "HARD", "SOFT", "MEDIUM"][:n],
@@ -329,12 +335,6 @@ class TestBuildFeatures:
         assert df.shape == original_shape, "build_features must not mutate the input"
 
 # Add these imports at the top of test_features.py:
-from src.pipeline.features import (
-    add_circuit_encoding,
-    add_era_feature,
-    add_stint_id,
-    ERA_BOUNDARY,
-)
 
 
 class TestAddCircuitEncoding:
@@ -437,3 +437,12 @@ class TestAddStintId:
         result = add_stint_id(df)
         assert result["StintID"].iloc[0] == result["StintID"].iloc[1]
         assert result["StintID"].iloc[2] > result["StintID"].iloc[1]
+
+def test_team_encoding_frozen_and_unseen():
+    train = pd.DataFrame({"Team": ["Ferrari", "McLaren", "Red Bull"]})
+    mapping = {t: i for i, t in enumerate(sorted(train["Team"].unique()))}
+    out = add_team_encoding(train, mapping=mapping)
+    assert out["TeamEncoded"].tolist() == [mapping[t] for t in train["Team"]]
+    test = pd.DataFrame({"Team": ["Ferrari", "Cadillac"]})  # Cadillac unseen
+    out2 = add_team_encoding(test, mapping=mapping)
+    assert out2["TeamEncoded"].tolist() == [mapping["Ferrari"], -1]

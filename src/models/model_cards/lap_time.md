@@ -29,7 +29,7 @@ Predict the lap time (in seconds) for a given driver on a given lap, given tyre 
 | Test (blind) | 2024 | ~20,000 |
 
 **Source:** FastF1 API (official F1 timing data)  
-**Filtering:** Pit out-laps (`TyreLife == 1`) removed. Lap times outside [75s, 130s] removed. Safety car laps not explicitly filtered — this is a known limitation (see below).
+**Filtering:** Pit out-laps (`TyreLife == 1`) removed. Lap times outside [70s, 130s] removed. Safety car laps not explicitly filtered — this is a known limitation (see below).
 
 **Split design:** Strictly by season. No random shuffling. This mirrors how the model would actually be deployed — trained on historical seasons, evaluated on a future season it has never seen.
 

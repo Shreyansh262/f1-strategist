@@ -25,9 +25,9 @@ logger = logging.getLogger(__name__)
 VALID_COMPOUNDS = {"SOFT", "MEDIUM", "HARD", "INTERMEDIATE", "WET"}
 
 # Lap time bounds derived from EDA (Bahrain 2023):
-# - Clean lap floor  ~90 s  (fast circuits can go ~80 s — keep 75 s as hard floor)
+# - Clean lap floor  ~90 s  (fast circuits can go ~80 s — keep 70s as hard floor)
 # - Outlier ceiling  ~115 s (pit-in / safety car laps spike to 130 s+, filtered upstream)
-LAP_TIME_MIN = 75.0   # seconds
+LAP_TIME_MIN = 70.0   # seconds
 LAP_TIME_MAX = 130.0  # seconds — includes slow laps but not obvious sensor errors
 
 TYRE_AGE_MAX = 80     # No tyre runs more than ~60 laps in a race

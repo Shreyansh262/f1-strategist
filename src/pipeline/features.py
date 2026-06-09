@@ -114,6 +114,50 @@ def add_circuit_encoding(
     return df
 
 
+def add_team_encoding(
+    df: pd.DataFrame,
+    mapping: dict[str, int] | None = None,
+) -> pd.DataFrame:
+    """
+    Label-encode Team using a frozen mapping dictionary.
+
+    Training mode (mapping=None):
+        Builds mapping from df sorted alphabetically, saves to
+        data/mappings/team_map.json. Call this once during training.
+
+    Inference mode (mapping=dict):
+        Pass the loaded team_map.json. Teams not in the mapping
+        receive sentinel value -1.
+
+    Leakage check: team identity is known before race start — no future
+    information used. Frozen mapping ensures train/inference consistency.
+    """
+    df = df.copy()
+
+    if mapping is None:
+        unique_teams = sorted(df["Team"].dropna().unique())
+        mapping = {t: i for i, t in enumerate(unique_teams)}
+        MAPPINGS_DIR.mkdir(parents=True, exist_ok=True)
+        map_path = MAPPINGS_DIR / "team_map.json"
+        with open(map_path, "w") as f:
+            json.dump(mapping, f, indent=2)
+        logger.info(
+            "Built and saved team mapping (%d teams) → %s",
+            len(mapping), map_path,
+        )
+
+    df["TeamEncoded"] = df["Team"].map(mapping).fillna(-1).astype(int)
+
+    n_unseen = (df["TeamEncoded"] == -1).sum()
+    if n_unseen > 0:
+        logger.warning(
+            "%d rows have unseen Team (encoded as -1). "
+            "New teams may need adding to team_map.json.",
+            n_unseen,
+        )
+    return df
+
+
 def add_era_feature(df: pd.DataFrame) -> pd.DataFrame:
     """
     Binary regulation era feature.
@@ -121,8 +165,6 @@ def add_era_feature(df: pd.DataFrame) -> pd.DataFrame:
         Era 1: active aero regulations   (2026+)
 
     Leakage check: era is fixed for the whole season, known before race start.
-    Key feature for the TabTransformer — the era embedding learns a 32-dim
-    representation of each regulation era.
     """
     df = df.copy()
     df["Era"] = (df["Season"] >= ERA_BOUNDARY).astype(int)
@@ -250,7 +292,7 @@ FEATURE_COLUMNS: Final[list[str]] = [
     # Identity (grouping / eval — NOT model inputs)
     "Driver", "Season", "RoundNumber", "CircuitKey", "LapNumber",
     # Model features
-    "CircuitEncoded", "CompoundEncoded", "Era",
+    "CircuitEncoded", "TeamEncoded", "CompoundEncoded", "Era",
     "TyreLife", "TyreAgeSq", "TyreAgeCubed",
     "CompoundXTyreLife", "FuelLoad", "FuelEffect",
     "TrackTemp", "AirTemp", "NormLapNumber", "StintPhase",
@@ -258,22 +300,11 @@ FEATURE_COLUMNS: Final[list[str]] = [
 
 MODEL_FEATURE_COLUMNS: Final[list[str]] = [
     # Exactly the columns passed to model.fit() / model.predict()
-    "CircuitEncoded", "CompoundEncoded", "Era",
+    "CircuitEncoded", "TeamEncoded", "CompoundEncoded", "Era",
     "TyreLife", "TyreAgeSq", "TyreAgeCubed",
     "CompoundXTyreLife", "FuelLoad", "FuelEffect",
     "TrackTemp", "AirTemp", "NormLapNumber", "StintPhase",
 ]
-
-# Categorical feature indices within MODEL_FEATURE_COLUMNS
-# Used by TabTransformer to route features to embedding layers
-CAT_FEATURE_INDICES: Final[list[int]] = [0, 1, 2]   # CircuitEncoded, CompoundEncoded, Era
-CONT_FEATURE_INDICES: Final[list[int]] = list(range(3, len(MODEL_FEATURE_COLUMNS)))
-
-# Cardinalities for embedding layers
-# CircuitEncoded: 24 (23 circuits + 1 for unseen/-1 sentinel)
-# CompoundEncoded: 5 (SOFT/MEDIUM/HARD/INT/WET)
-# Era: 2 (ground-effect / active-aero)
-CAT_CARDINALITIES: Final[list[int]] = [24, 5, 2]
 
 
 # ---------------------------------------------------------------------------
@@ -283,6 +314,7 @@ CAT_CARDINALITIES: Final[list[int]] = [24, 5, 2]
 def build_features(
     df: pd.DataFrame,
     circuit_mapping: dict[str, int] | None = None,
+    team_mapping: dict[str, int] | None = None,
 ) -> pd.DataFrame:
     """
     Apply all feature engineering transforms in the correct order.
@@ -294,6 +326,9 @@ def build_features(
     circuit_mapping : dict[str, int] | None
         Training mode  (None)   : builds mapping from df, saves circuit_map.json.
         Inference mode (dict)   : uses supplied mapping; unseen circuits → -1.
+    team_mapping : dict[str, int] | None
+        Training mode  (None)   : builds mapping from df, saves team_map.json.
+        Inference mode (dict)   : uses supplied mapping; unseen teams → -1.
 
     Returns
     -------
@@ -304,6 +339,7 @@ def build_features(
 
     df = add_compound_encoding(df)
     df = add_circuit_encoding(df, mapping=circuit_mapping)
+    df = add_team_encoding(df, mapping=team_mapping)
     df = add_era_feature(df)
     df = impute_weather(df)
     df = add_fuel_load(df)
