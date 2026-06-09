@@ -83,13 +83,13 @@ pydantic
 streamlit
 torch
 plotly
+lightgbm
+optuna
 ```
 
 **TO INSTALL for v3 (only those NOT above):**
 ```
-lightgbm                 # tuned gradient-boosting = the real tree baseline to beat
-optuna                   # hyperparameter sweeps (GPU makes this cheap, worth doing properly)
-pytorch-forecasting      # TFT implementation (pulls in pytorch-lightning)
+pytorch-forecasting      # TFT implementation (pulls in pytorch-lightning) — Phase 2
 pytorch-lightning        # training loop for TFT (dependency of above; pin a compatible version)
 # RL STRETCH ONLY (do not install until Phase 5):
 stable-baselines3        # PPO/DQN for pit-strategy agent
@@ -211,6 +211,7 @@ Streamlit multi-page app. Pages in Section 12. Existing HTML artifact becomes th
 | Norm lap number | `NormLapNumber` | features.py | float 0–1 |
 | Stint phase | `StintPhase` | features.py | int |
 | Pit lap flag | `IsPitLap` | ingest.py | bool, stint segmentation only |
+| Track status | `TrackStatus` | ingest.py | str, FastF1 codes ("1" = all green). Eval-only metadata for green-flag MAE, NOT a model feature |
 | Stint ID | `StintID` | features.py | int, per driver per race |
 
 Constants (unchanged): `FUEL_LOAD_START_KG=110.0`, `FUEL_BURN_PER_LAP=1.5`, `FUEL_EFFECT_PER_KG=0.03`.
@@ -239,11 +240,15 @@ DONE (from v2 — keep):
   [x] Lap-time RF baseline + evaluate.py + model card scaffold
 
 v3 PHASES (no fixed weeks — quality first, sprint pace):
-  [ ] Phase 0 — Migration: re-ingest 2026 (6 races), add Team passthrough + TeamEncoded,
-                fix Monaco floor, update splits, set up A6000 env       <-- CURRENT
-  [ ] Phase 1 — Lap-time baseline ladder: Ridge (proper encoding) -> RF -> LightGBM+Optuna.
-                Honest per-era / green-flag MAE. LightGBM is the bar to beat.
-  [ ] Phase 2 — TFT lap model on A6000. Beat LightGBM honestly or report why not. Calibrate quantiles.
+  [x] Phase 0 — Migration: re-ingested 2022-2026 with Team passthrough, TeamEncoded wired
+                (incl. FEATURE_COLUMNS projection), Monaco floor -> 70.0 + per-filter row logging,
+                splits/leakage updated, TabTransformer retired. Tests passing. (A6000 setup deferred to Phase 2.)
+  [x] Phase 1 — Lap-time baseline ladder DONE: Ridge(one-hot)/RF/LightGBM+Optuna on 103,732 deduped laps.
+                Chosen = LightGBM: green MAE 2.18s val(era0) / 2.14s test(era1) — generalizes across the
+                2026 boundary (within 6-race noise). RF kept as the era-collapse counter-example.
+                TeamEncoded validated (SHAP 6/14). Model card filled. per-era/green-flag/per-circuit/SHAP written.
+  [ ] Phase 2 — TFT lap model on A6000. Beat LightGBM's 2.14s green-test honestly or report why not.
+                Calibrate quantiles. FIRST: set up A6000 env + install pytorch-forecasting/lightning.   <-- CURRENT
   [ ] Phase 3 — Tyre degradation model: curve_fit + hierarchical pooling + CIs.
   [ ] Phase 4 — Pit MDP + Monte Carlo simulation engine (THE SHOWCASE). Validate sim vs history.
   [ ] Phase 5 — STRETCH: RL pit agent in the simulator, vs MDP. Only if Phases 0-4 are solid.
@@ -299,6 +304,7 @@ v3 PHASES (no fixed weeks — quality first, sprint pace):
 - **Time-varying observed:** track temp, air temp.
 - **Output:** quantile predictions (e.g. 0.1/0.5/0.9) → median + calibrated interval. This replaces v2's MC-dropout hack with native uncertainty.
 - **Why TFT not TabTransformer:** laps in a stint are a genuine sequence with degradation dynamics; the A6000 makes a real sequence model trivial; quantile loss gives honest uncertainty; variable-length stints are handled by the library's encoder/decoder + masking.
+- **Feature roles by NAME, never positional index.** Declare `static_categoricals` / `time_varying_known_reals` / `time_varying_observed_reals` by column name; pytorch-forecasting builds the categorical encoders and cardinalities itself. The retired TabTransformer used positional constants (`CAT_FEATURE_INDICES`, `CONT_FEATURE_INDICES`, `CAT_CARDINALITIES`) that silently broke when a column was inserted — those are removed in v3 and must not return.
 - **Why TFT not a giant transformer:** data is small. TFT is the right *size* and is interpretable (variable-selection + attention weights are inspectable — great for the writeup).
 - **Honesty rule:** keep TFT as headline only if it beats LightGBM on val. Report per-era MAE either way — the cross-regulation story is the real result, not raw aggregate MAE.
 
@@ -337,7 +343,7 @@ Gymnasium env = the simulator. PPO or DQN. State as in the MDP. Reward = final p
 1. Season-aware splits only. Never shuffle.
 2. Per-circuit MAE always (aggregate hides circuit failures).
 3. Per-era MAE — 2022-2025 separate from 2026. **This is the headline metric.**
-4. **Green-flag vs all-laps MAE split** — report both; the SC/restart impact is a talking point.
+4. **Green-flag vs all-laps MAE split** — report both; the SC/restart impact is a talking point. Green = `TrackStatus == "1"` for the whole lap (eval segmentation only, never a model feature — SC isn't known in advance).
 5. Baseline ladder: TFT must beat LightGBM, LightGBM beats RF, RF beats Ridge — or report honestly why not.
 6. Every prediction needs uncertainty: TFT quantiles (verify calibration), tyre CIs, sim distributions.
 7. **Validate the simulation against historical races** — does its outcome distribution cover reality?
@@ -389,9 +395,11 @@ Read before writing any code. (Carried from v2 — all still valid.)
 6. **pytest.approx on Series returns np.False_** — loop element-wise. FIXED.
 7. **Null Compound = string "None"** — mask `isna() | == "None" | ~isin(VALID)`. FIXED.
 8. **Sprint laps contaminating data** — primary defense is `session_type="R"` at ingestion; the `mean>105s` filter is a safety net only and may catch wet races, so don't rely on it. FIXED (with caveat).
-9. **RF not beating baseline** — root cause was no circuit encoding. v3 adds CircuitEncoded + TeamEncoded; LightGBM replaces RF as the real bar. IN PROGRESS → resolved in Phase 1.
+9. **RF not beating baseline** — original root cause was no circuit encoding. v3 added CircuitEncoded + TeamEncoded, but RF still overfits (sklearn can't split integer-coded categoricals natively) and collapses across the era boundary (test MAE >> val, because it never saw Era=1 / new 2026 teams in train). This is now EXPECTED and KEPT ON PURPOSE: RF is the naive-tree rung and the cross-era counter-example — LightGBM (native categorical handling + Optuna + regularization) holds val≈test across the regulation boundary, which is the project's headline contrast. RESOLVED — do not "fix" RF, do not one-hot it (muddies the lesson). LightGBM is the selected lap model.
 
 **v3 watch-items (not yet bugs, prevent them):** Monaco 75s floor clipping; pytorch-forecasting version conflicts; tyre curve_fit failing on single short stints (needs pooling fallback); deployment host missing data/models (gitignored).
+
+10. **`load_data` double-counted every lap** — the `data/raw/*.parquet` glob matched both per-round files (`laps_YYYY_rNN.parquet`) AND `laps_YYYY_full.parquet` aggregates, so every lap loaded twice. Pre-fix MAEs/tuning/row-counts were on duplicated data. Fix: glob per-round only (`laps_*_r*.parquet`) + `.drop_duplicates(["Season","RoundNumber","Driver","LapNumber"])` guard after concat; `_full` aggregates must never be globbed by the trainer. FIXED in Phase 1.
 
 ---
 

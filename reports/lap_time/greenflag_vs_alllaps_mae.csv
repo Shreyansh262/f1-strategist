@@ -1,0 +1,7 @@
+model,split,all_laps_mae,green_mae,delta,n_all,n_green
+BayesianRidge,test,3.965,2.8785,1.0865,6195,5481
+LightGBM,test,3.4479,2.1382,1.3097,6195,5481
+RandomForest,test,9.0098,8.4627,0.547,6195,5481
+BayesianRidge,val,4.1622,2.9671,1.1951,20638,18952
+LightGBM,val,3.5164,2.1814,1.335,20638,18952
+RandomForest,val,6.4188,5.5748,0.844,20638,18952

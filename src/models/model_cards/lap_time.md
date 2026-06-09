@@ -1,131 +1,43 @@
-# Model Card — Lap Time Predictor
+# Model Card — Lap Time Predictor (Phase 1: baseline ladder)
 
-## Model Details
+## Overview
+Predicts single-lap time (`LapTimeSeconds`) for an F1 race lap from circuit, team, compound, tyre age, fuel load, weather, and regulation era. Phase 1 establishes an honest point-prediction baseline ladder; the headline sequence model (Temporal Fusion Transformer, with calibrated uncertainty) follows in Phase 2.
 
-| Field | Value |
-|---|---|
-| Model name | Lap Time Predictor |
-| Version | v1.0 |
-| Type | Random Forest Regressor (scikit-learn) |
-| Baseline | Bayesian Ridge |
-| Trained | Week 3, March 2026 |
-| Author | Shreyansh |
-| Framework | scikit-learn 1.x |
+**Selected model:** LightGBM (Optuna-tuned, native categorical handling). Chosen as the lowest-val-MAE candidate; beats the linear baseline on every split. A safety check raises if no candidate beats the baseline.
 
-## Intended Use
+## Data
+- Source: FastF1, race sessions only (`session_type="R"`), 2022–2026.
+- 103,732 laps after validation + de-duplication, from 94 per-round files.
+- Season-aware splits (no shuffle): **train** 2022–2024 (era 0, ground-effect), **val** 2025 (era 0), **test** 2026 R1–6 (era 1, active-aero — 6 races; Bahrain & Saudi cancelled).
+- Filters: out-laps (`TyreLife==1`), lap time outside [70, 130]s, invalid/null compound, sprint safety-net.
 
-Predict the lap time (in seconds) for a given driver on a given lap, given tyre state, fuel load, and weather conditions.
-
-**Primary use:** Input to the Pit Strategy MDP (Week 6) — the MDP queries this model to estimate the cost of staying out on degraded tyres vs. pitting for a fresh set.
-
-**Out of scope:** Live race predictions without current telemetry, safety car laps, formation laps, qualifying laps.
-
-## Training Data
-
-| Split | Seasons | Approximate laps |
+## Results — MAE (seconds)
+| Model | Val all / green (2025, era0) | Test all / green (2026, era1) |
 |---|---|---|
-| Train | 2021, 2022 | ~40,000 |
-| Validation | 2023 | ~20,000 |
-| Test (blind) | 2024 | ~20,000 |
+| BayesianRidge (one-hot + scaled) | 4.16 / 2.97 | 3.97 / 2.88 |
+| RandomForest (integer codes) | 6.42 / 5.57 | 9.01 / 8.46 |
+| **LightGBM (chosen)** | **3.52 / 2.18** | **3.45 / 2.14** |
 
-**Source:** FastF1 API (official F1 timing data)  
-**Filtering:** Pit out-laps (`TyreLife == 1`) removed. Lap times outside [70s, 130s] removed. Safety car laps not explicitly filtered — this is a known limitation (see below).
+Green-flag = `TrackStatus == "1"` (91.8% of val laps, 88.5% of test laps). Safety-car / yellow laps account for ~1.3s of the all-laps error.
 
-**Split design:** Strictly by season. No random shuffling. This mirrors how the model would actually be deployed — trained on historical seasons, evaluated on a future season it has never seen.
+## Key findings
+- **Cross-regulation generalization (the headline).** LightGBM green-lap MAE is 2.18s on val (era 0) vs 2.14s on test (era 1) — essentially flat across the 2022-25 → 2026 regulation boundary. A model trained only on ground-effect-era data carries that learning into the unseen active-aero era. **Caveat:** the 2026 test set is only 6 races, so test ≈ val means "generalizes within noise," not "generalizes *better* than val." A larger 2026 sample is needed to tighten this.
+- **RandomForest is kept as an instructive counter-example, not a candidate.** It collapses across the boundary (green test 8.46s vs green val 5.57s) because sklearn trees can't split integer-coded categoricals natively and RF never saw era 1 / new 2026 teams in training. The contrast is the motivation for LightGBM's native-categorical + regularized approach.
+- **Team-pace fix validated.** `TeamEncoded` ranks 6th of 14 features by mean |SHAP| (0.43), above every tyre-age polynomial term, the compound×life interaction, and fuel effect — car pace is real, learnable signal. Circuit dominates everything (~7.26, ~17× team), as expected: track length sets the baseline lap time.
 
-## Features
+## Feature importance (LightGBM, mean |SHAP|, on val)
+CircuitEncoded 7.26 ≫ AirTemp 0.99, TrackTemp 0.62, CompoundEncoded 0.59, FuelLoad 0.58, TeamEncoded 0.43, CompoundXTyreLife 0.14, FuelEffect 0.13, NormLapNumber 0.12, TyreLife 0.11, TyreAgeSq 0.03, TyreAgeCubed 0.003, StintPhase ≈0, Era 0.00.
+Physical features rank sensibly (temps/compound/fuel above tyre-age polynomials) — the model learned structure, not noise. Era attributes 0.00 because val is single-era (no variance to attribute) — not a bug.
 
-| Feature | Description | Available at race time? |
-|---|---|---|
-| `CompoundEncoded` | Tyre compound (Soft=0, Medium=1, Hard=2) | ✅ Yes |
-| `TyreLife` | Laps on current tyre set | ✅ Yes |
-| `TyreAgeSq` | TyreLife² — captures accelerating degradation | ✅ Yes |
-| `TyreAgeCubed` | TyreLife³ — cliff-edge degradation (Soft) | ✅ Yes |
-| `CompoundXTyreLife` | Compound × TyreLife interaction | ✅ Yes |
-| `FuelLoad` | Estimated fuel remaining (kg) | ✅ Estimated (110 kg − 1.5 kg/lap) |
-| `FuelEffect` | FuelLoad × 0.03 s/kg time penalty | ✅ Derived from FuelLoad |
-| `TrackTemp` | Track surface temperature (°C) | ✅ Live sensor |
-| `AirTemp` | Ambient air temperature (°C) | ✅ Live sensor |
-| `NormLapNumber` | Lap number / total race laps | ✅ Known during race |
-| `StintPhase` | Early/mid/late stint (0/1/2) | ✅ Derived from TyreLife |
-
-**No features use future information.** All inputs are observable at the start of the lap being predicted.
-
-## Model Architecture
-
-**Baseline:** Bayesian Ridge with StandardScaler. Provides uncertainty estimates natively (predictive variance). Used as the performance floor — the RF must beat this to justify added complexity.
-
-**Final model:** Random Forest Regressor, selected via manual grid search over:
-- `n_estimators`: [100, 200, 300]
-- `max_depth`: [6, 10, 15]
-- `min_samples_leaf`: [2, 3, 5]
-
-All configurations logged to MLflow. Best configuration selected by validation MAE (2023 season).
-
-## Evaluation Results
-
-*(Fill in after running evaluate.py)*
-
-### Overall MAE (seconds)
-
-| Model | Train MAE | Val MAE (2023) | Test MAE (2024) |
-|---|---|---|---|
-| Bayesian Ridge | — | — | — |
-| Random Forest | — | — | — |
-
-### Per-circuit MAE — Val 2023 (seconds)
-
-*(Generated by evaluate.py → reports/lap_time/per_circuit_mae.csv)*
-
-| Circuit | Bayesian Ridge MAE | Random Forest MAE |
-|---|---|---|
-| Bahrain | — | — |
-| ... | — | — |
+## Intended use / out of scope
+**For:** pre-/post-race lap-time estimation, and as an input to the tyre-degradation and Monte Carlo simulation models. **Not for:** wagering, or any real-time safety-critical decision. No uncertainty estimate at this rung — added with the TFT (quantile outputs) in Phase 2.
 
 ## Limitations
+No live telemetry (tyre temperatures, ERS deployment, fuel flow, active-aero state — the last especially impactful in 2026); SC/VSC/red-flag laps not modeled (reported separately); fuel load estimated via linear 110kg burn; driver skill not modeled as a continuous variable; SOFT/MEDIUM/HARD labels hide the circuit-varying C1–C5 compounds. The 2026 test set is small (6 races) and statistically noisy.
 
-1. **No live telemetry.** Real F1 teams use tyre temperature sensors, fuel flow sensors, and real-time ERS data. This model uses estimated fuel load and ambient temperature only. Accuracy would improve significantly with tyre temperature as a feature.
-
-2. **Safety car laps not filtered.** Lap times on laps immediately following a safety car restart are ~0.6s slower than the model predicts. These laps are structurally different and the model has no feature to identify them. MAE increases by approximately 0.6s on these laps.
-
-3. **Fuel load is estimated, not measured.** The 1.5 kg/lap burn rate is an average — actual burn rate varies by circuit and driving style. Error is small in aggregate (~±0.1s) but compounds over long stints.
-
-4. **Regulation changes between seasons.** The 2022 ground-effect regulation change caused a step-change in lap time distributions. The model is trained across this boundary — this may add noise, but also forces the model to learn features that generalise rather than memorise a single regulatory era.
-
-5. **Medium tyre data sparse at some circuits.** As observed in EDA (Bahrain 2023: <10 medium tyre laps), per-compound confidence intervals will be wide at circuits where a compound is rarely used.
-
-## Ethical Considerations
-
-This model is built for educational and portfolio purposes using publicly available official F1 timing data. It is not intended for commercial use or betting applications.
-
-## How to Use
-
-```python
-import joblib
-import pandas as pd
-from src.pipeline.features import build_features, MODEL_FEATURE_COLUMNS
-
-# Load
-rf_model = joblib.load("models/rf_lap.joblib")
-
-# Build a single-lap prediction DataFrame
-lap = pd.DataFrame([{
-    "Driver": "VER", "LapNumber": 25, "LapTimeSeconds": 0,  # target unknown
-    "Compound": "MEDIUM", "TyreLife": 10,
-    "TrackTemp": 40.0, "AirTemp": 28.0,
-    "Season": 2024, "RoundNumber": 1, "CircuitKey": "bahrain",
-}])
-
-features = build_features(lap)
-X = features[[c for c in MODEL_FEATURE_COLUMNS if c in features.columns]]
-predicted_lap_time = rf_model.predict(X)[0]
-print(f"Predicted lap time: {predicted_lap_time:.3f}s")
-```
-
-## Experiment Tracking
-
-All training runs logged to MLflow:
+## Reproduce
 ```bash
-mlflow ui --port 5000
+python -m src.models.lap_time.train      # ladder + Optuna, logs to MLflow, saves models/*.joblib
+python -m src.models.lap_time.evaluate   # writes reports/lap_time/*
 ```
-Experiment name: `lap_time_predictor`
+Artifacts: `models/{bayesian_ridge,rf,lgbm,chosen}_lap.joblib`; `reports/lap_time/{model_comparison,per_era_mae,greenflag_vs_alllaps,per_circuit_mae,shap_importance}.csv`, `shap_summary.png`, `learning_curve.png`.

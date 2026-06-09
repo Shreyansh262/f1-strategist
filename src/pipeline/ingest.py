@@ -90,6 +90,10 @@ def extract_laps(session: fastf1.core.Session) -> pd.DataFrame:
 
     # Cast Team to str (FastF1 Team field)
     laps["Team"] = laps["Team"].astype(str)
+    # Cast TrackStatus to str (eval-only metadata, like IsPitLap — passthrough,
+    # NOT a model feature). FastF1 encodes flags as a string code ('1' = green).
+    if "TrackStatus" in laps.columns:
+        laps["TrackStatus"] = laps["TrackStatus"].astype(str)
     # Cast TyreLife to int (FastF1 returns float)
     laps["TyreLife"] = laps["TyreLife"].fillna(0).astype(int)
     # Cast LapNumber to int

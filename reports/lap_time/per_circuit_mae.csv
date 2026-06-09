@@ -1,23 +1,79 @@
-CircuitKey,split,bayesian_ridge_mae,random_forest_mae,n_laps
-British Grand Prix,val_2023,3.4091,0.5087,1730
-Miami Grand Prix,val_2023,2.7016,0.5548,2204
-Abu Dhabi Grand Prix,val_2023,5.6507,0.5963,2212
-Spanish Grand Prix,val_2023,8.0367,0.6252,2530
-United States Grand Prix,val_2023,5.4894,0.656,1922
-Azerbaijan Grand Prix,val_2023,10.7474,0.6576,1746
-Belgian Grand Prix,val_2023,14.7128,0.6744,1518
-Saudi Arabian Grand Prix,val_2023,4.6579,0.7851,1722
-Japanese Grand Prix,val_2023,3.9143,0.7925,1528
-São Paulo Grand Prix,val_2023,5.9235,0.8673,1780
-Mexico City Grand Prix,val_2023,4.2862,0.889,2400
-Australian Grand Prix,val_2023,10.4717,0.9153,1724
-Singapore Grand Prix,val_2023,7.296,0.9196,2012
-Bahrain Grand Prix,val_2023,3.6627,0.9435,2002
-Italian Grand Prix,val_2023,11.1608,0.9496,1854
-Canadian Grand Prix,val_2023,8.35,0.9616,2430
-Las Vegas Grand Prix,val_2023,4.5886,0.9678,1614
-Hungarian Grand Prix,val_2023,3.7814,1.0499,2462
-Qatar Grand Prix,val_2023,9.4978,1.1261,1812
-Dutch Grand Prix,val_2023,8.4098,1.2216,2262
-Monaco Grand Prix,val_2023,10.2841,1.2324,2904
-Austrian Grand Prix,val_2023,13.0736,3.374,160
+model,split,Era,CircuitKey,mae
+BayesianRidge,test,1,Australian Grand Prix,3.796
+BayesianRidge,test,1,Canadian Grand Prix,5.4008
+BayesianRidge,test,1,Chinese Grand Prix,3.8366
+BayesianRidge,test,1,Japanese Grand Prix,2.3799
+BayesianRidge,test,1,Miami Grand Prix,1.77
+BayesianRidge,test,1,Monaco Grand Prix,5.5365
+LightGBM,test,1,Australian Grand Prix,3.4301
+LightGBM,test,1,Canadian Grand Prix,5.2012
+LightGBM,test,1,Chinese Grand Prix,1.6208
+LightGBM,test,1,Japanese Grand Prix,2.6088
+LightGBM,test,1,Miami Grand Prix,2.6322
+LightGBM,test,1,Monaco Grand Prix,4.2448
+RandomForest,test,1,Australian Grand Prix,6.0807
+RandomForest,test,1,Canadian Grand Prix,14.52
+RandomForest,test,1,Chinese Grand Prix,5.5174
+RandomForest,test,1,Japanese Grand Prix,16.0137
+RandomForest,test,1,Miami Grand Prix,2.4288
+RandomForest,test,1,Monaco Grand Prix,7.7769
+BayesianRidge,val,0,Australian Grand Prix,6.56
+BayesianRidge,val,0,Austrian Grand Prix,3.3384
+BayesianRidge,val,0,Bahrain Grand Prix,2.1779
+BayesianRidge,val,0,British Grand Prix,3.6151
+BayesianRidge,val,0,Canadian Grand Prix,6.4775
+BayesianRidge,val,0,Chinese Grand Prix,6.7148
+BayesianRidge,val,0,Dutch Grand Prix,7.2076
+BayesianRidge,val,0,Emilia Romagna Grand Prix,5.6806
+BayesianRidge,val,0,Hungarian Grand Prix,2.5169
+BayesianRidge,val,0,Italian Grand Prix,2.699
+BayesianRidge,val,0,Japanese Grand Prix,3.7625
+BayesianRidge,val,0,Las Vegas Grand Prix,3.511
+BayesianRidge,val,0,Mexico City Grand Prix,2.7241
+BayesianRidge,val,0,Miami Grand Prix,3.487
+BayesianRidge,val,0,Monaco Grand Prix,3.9628
+BayesianRidge,val,0,Saudi Arabian Grand Prix,1.7663
+BayesianRidge,val,0,Singapore Grand Prix,2.3982
+BayesianRidge,val,0,Spanish Grand Prix,4.673
+BayesianRidge,val,0,São Paulo Grand Prix,5.9444
+BayesianRidge,val,0,United States Grand Prix,2.5386
+LightGBM,val,0,Australian Grand Prix,7.0086
+LightGBM,val,0,Austrian Grand Prix,3.2668
+LightGBM,val,0,Bahrain Grand Prix,1.4541
+LightGBM,val,0,British Grand Prix,6.519
+LightGBM,val,0,Canadian Grand Prix,4.2329
+LightGBM,val,0,Chinese Grand Prix,3.8023
+LightGBM,val,0,Dutch Grand Prix,8.3228
+LightGBM,val,0,Emilia Romagna Grand Prix,5.1816
+LightGBM,val,0,Hungarian Grand Prix,0.796
+LightGBM,val,0,Italian Grand Prix,2.9371
+LightGBM,val,0,Japanese Grand Prix,3.8802
+LightGBM,val,0,Las Vegas Grand Prix,2.1283
+LightGBM,val,0,Mexico City Grand Prix,2.4515
+LightGBM,val,0,Miami Grand Prix,2.4498
+LightGBM,val,0,Monaco Grand Prix,3.2424
+LightGBM,val,0,Saudi Arabian Grand Prix,0.9183
+LightGBM,val,0,Singapore Grand Prix,1.7226
+LightGBM,val,0,Spanish Grand Prix,4.6082
+LightGBM,val,0,São Paulo Grand Prix,4.3909
+LightGBM,val,0,United States Grand Prix,1.4559
+RandomForest,val,0,Australian Grand Prix,10.176
+RandomForest,val,0,Austrian Grand Prix,2.7783
+RandomForest,val,0,Bahrain Grand Prix,2.3508
+RandomForest,val,0,British Grand Prix,4.4054
+RandomForest,val,0,Canadian Grand Prix,5.7607
+RandomForest,val,0,Chinese Grand Prix,8.379
+RandomForest,val,0,Dutch Grand Prix,12.3265
+RandomForest,val,0,Emilia Romagna Grand Prix,5.2383
+RandomForest,val,0,Hungarian Grand Prix,3.4799
+RandomForest,val,0,Italian Grand Prix,6.9041
+RandomForest,val,0,Japanese Grand Prix,7.1716
+RandomForest,val,0,Las Vegas Grand Prix,4.1118
+RandomForest,val,0,Mexico City Grand Prix,3.8877
+RandomForest,val,0,Miami Grand Prix,3.1618
+RandomForest,val,0,Monaco Grand Prix,3.4133
+RandomForest,val,0,Saudi Arabian Grand Prix,1.5717
+RandomForest,val,0,Singapore Grand Prix,7.09
+RandomForest,val,0,Spanish Grand Prix,19.879
+RandomForest,val,0,São Paulo Grand Prix,10.0972
+RandomForest,val,0,United States Grand Prix,1.7682

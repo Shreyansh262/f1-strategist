@@ -1,17 +1,18 @@
 """
 src/models/lap_time/evaluate.py
 
-Evaluation for the trained lap time predictor.
-Generates three sets of outputs, all saved to reports/lap_time/:
+Evaluation for the trained lap time predictor — per-era + green-flag breakdown.
+All outputs saved to reports/lap_time/:
 
-    1. per_circuit_mae.csv     — MAE per circuit for both models
-    2. learning_curve.png      — train vs val MAE as training size grows
-    3. shap_summary.png        — SHAP feature importance for RF model
+    1. model_comparison.csv          — all 3 models × val/test (all-laps + green + per-era)
+    2. per_era_mae.csv               — MAE per regulation era (all-laps + green)
+    3. greenflag_vs_alllaps_mae.csv  — green-flag vs all-laps MAE per model × split
+    4. per_circuit_mae.csv           — MAE per circuit, split by era
+    5. shap_summary.png + shap_importance.csv  — SHAP on the chosen LightGBM model
+    6. learning_curve.png            — RF train vs CV val MAE
 
 Run after train.py has completed:
     python -m src.models.lap_time.evaluate
-
-All plots are also logged to the active MLflow run if one is open.
 """
 
 import logging
@@ -23,8 +24,6 @@ import mlflow
 import numpy as np
 import pandas as pd
 import shap
-from sklearn.linear_model import BayesianRidge
-from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import mean_absolute_error
 from sklearn.model_selection import learning_curve
 
@@ -36,9 +35,7 @@ from src.models.lap_time.train import (
     EXPERIMENT_NAME,
     MODELS_DIR,
     PROJECT_ROOT,
-    TARGET,
     get_X_y,
-    load_data,
 )
 
 logging.basicConfig(
@@ -51,290 +48,291 @@ logger = logging.getLogger(__name__)
 REPORTS_DIR = PROJECT_ROOT / "reports" / "lap_time"
 REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 
+META_COLS = ["Era", "CircuitKey", "TrackStatus"]
+LAP_KEYS  = ["Season", "RoundNumber", "Driver", "LapNumber"]
+
 
 # ---------------------------------------------------------------------------
-# 1. Per-circuit MAE table
+# Core MAE breakdown helper
 # ---------------------------------------------------------------------------
 
-def evaluate_per_circuit(
-    br_model: BayesianRidge,
-    br_scaler,
-    rf_model: RandomForestRegressor,
-    val_df: pd.DataFrame,
-    test_df: pd.DataFrame,
-) -> pd.DataFrame:
-    """
-    Compute MAE for both models on both val and test sets, broken down by circuit.
+def mae_breakdown(y_true, y_pred, meta: pd.DataFrame) -> dict:
+    """y_true, y_pred, meta must be index-aligned. meta needs columns: Era, CircuitKey, TrackStatus."""
+    d = meta.reset_index(drop=True).copy()
+    d["abs_err"] = (pd.Series(y_true).reset_index(drop=True) - pd.Series(y_pred).reset_index(drop=True)).abs()
+    green = d[d["TrackStatus"] == "1"]
+    return {
+        "all_laps_mae": d["abs_err"].mean(),     "n_all": len(d),
+        "green_mae": green["abs_err"].mean(),     "n_green": len(green),
+        "per_era": d.groupby("Era")["abs_err"].mean().to_dict(),
+        "per_era_green": green.groupby("Era")["abs_err"].mean().to_dict(),
+        "per_circuit": d.groupby(["Era", "CircuitKey"])["abs_err"].mean().to_dict(),
+    }
 
-    Returns a DataFrame with columns:
-        CircuitKey | split | bayesian_ridge_mae | random_forest_mae
-    """
-    rows = []
 
-    for split_name, df in [("val_2024", val_df), ("test_2025", test_df)]:
+# ---------------------------------------------------------------------------
+# Data loading — carries TrackStatus (eval-only meta) onto the feature matrix
+# ---------------------------------------------------------------------------
+
+def load_eval_data() -> pd.DataFrame:
+    """
+    Like train.load_data() but keeps TrackStatus aligned with the feature matrix.
+
+    TrackStatus is NOT in FEATURE_COLUMNS, so build_features() drops it. Here we
+    re-attach it by merging on lap identity (Season, RoundNumber, Driver, LapNumber)
+    after feature building. Era and CircuitKey already survive (both in FEATURE_COLUMNS).
+    """
+    raw_dir = PROJECT_ROOT / "data" / "raw"
+    files = sorted(raw_dir.glob("laps_*_r*.parquet"))  # per-round only — never the _full aggregates
+    if not files:
+        raise FileNotFoundError(
+            f"No per-round parquet files (laps_*_r*.parquet) in {raw_dir}. Run ingest first."
+        )
+
+    raw = pd.concat((pd.read_parquet(f) for f in files), ignore_index=True)
+    raw = raw.drop_duplicates(subset=LAP_KEYS).reset_index(drop=True)
+
+    meta = raw[LAP_KEYS + ["TrackStatus"]].copy()
+    meta["TrackStatus"] = meta["TrackStatus"].astype(str)
+
+    feats = build_features(validate_laps(raw))
+    merged = feats.merge(meta, on=LAP_KEYS, how="left")
+
+    n_missing = merged["TrackStatus"].isna().sum()
+    if n_missing:
+        logger.warning("%d eval laps missing TrackStatus after merge — set to 'NA'", n_missing)
+        merged["TrackStatus"] = merged["TrackStatus"].fillna("NA")
+
+    logger.info("Eval data: %d laps with TrackStatus attached", len(merged))
+    return merged
+
+
+# ---------------------------------------------------------------------------
+# Run all 3 models × both splits → report tables
+# ---------------------------------------------------------------------------
+
+ERA_LABEL = {0: "ground_effect", 1: "active_aero"}
+
+
+def run_breakdowns(models: dict, splits: dict) -> dict:
+    """models: name -> fitted model. splits: split_name -> df. Returns {(model,split): breakdown}."""
+    out = {}
+    for split_name, df in splits.items():
         if len(df) == 0:
-            logger.warning("Skipping %s — empty DataFrame", split_name)
+            logger.warning("Split %s empty — skipping", split_name)
             continue
+        X, y = get_X_y(df)
+        meta = df[META_COLS].copy()
+        for model_name, model in models.items():
+            y_pred = model.predict(X)
+            out[(model_name, split_name)] = mae_breakdown(y.values, y_pred, meta)
+    return out
 
-        for circuit, group in df.groupby("CircuitKey"):
-            X, y = get_X_y(group)
 
-            X_scaled = br_scaler.transform(X)
-            br_mae   = mean_absolute_error(y, br_model.predict(X_scaled))
-            rf_mae   = mean_absolute_error(y, rf_model.predict(X))
-
-            rows.append({
-                "CircuitKey":         circuit,
-                "split":              split_name,
-                "bayesian_ridge_mae": round(br_mae, 4),
-                "random_forest_mae":  round(rf_mae, 4),
-                "n_laps":             len(group),
-            })
-
-    results_df = pd.DataFrame(rows).sort_values(["split", "random_forest_mae"])
-
-    out_path = REPORTS_DIR / "per_circuit_mae.csv"
-    results_df.to_csv(out_path, index=False)
-    logger.info("Per-circuit MAE saved to %s", out_path)
-
-    # Pretty print
-    logger.info("\n%s", results_df.to_string(index=False))
-
-    return results_df
-
-def evaluate_per_era(
-    br_model: BayesianRidge,
-    br_scaler,
-    rf_model: RandomForestRegressor,
-    val_df: pd.DataFrame,
-    test_df: pd.DataFrame,
-) -> pd.DataFrame:
-    """
-    Compute MAE for both models broken down by regulation era.
-    Era 0 = 2022-2025, Era 1 = 2026+.
-    """
+def write_model_comparison(bd: dict) -> pd.DataFrame:
     rows = []
-    for split_name, df in [("val", val_df), ("test", test_df)]:
-        if len(df) == 0:
-            continue
-        if "Era" not in df.columns:
-            logger.warning("Era column missing — skipping per-era MAE for %s", split_name)
-            continue
-        for era, group in df.groupby("Era"):
-            X, y = get_X_y(group)
-            X_scaled = br_scaler.transform(X)
+    for (model, split), b in bd.items():
+        rows.append({
+            "model":        model,
+            "split":        split,
+            "all_laps_mae": round(b["all_laps_mae"], 4),
+            "green_mae":    round(b["green_mae"], 4),
+            "n_all":        b["n_all"],
+            "n_green":      b["n_green"],
+            "era0_mae":     round(b["per_era"].get(0, float("nan")), 4),
+            "era1_mae":     round(b["per_era"].get(1, float("nan")), 4),
+        })
+    df = pd.DataFrame(rows).sort_values(["split", "all_laps_mae"]).reset_index(drop=True)
+    df.to_csv(REPORTS_DIR / "model_comparison.csv", index=False)
+    logger.info("model_comparison.csv\n%s", df.to_string(index=False))
+    return df
+
+
+def write_per_era(bd: dict) -> pd.DataFrame:
+    rows = []
+    for (model, split), b in bd.items():
+        for era, mae in b["per_era"].items():
             rows.append({
-                "Era":                era,
-                "era_label":          "ground_effect" if era == 0 else "active_aero",
-                "split":              split_name,
-                "bayesian_ridge_mae": round(mean_absolute_error(y, br_model.predict(X_scaled)), 4),
-                "random_forest_mae":  round(mean_absolute_error(y, rf_model.predict(X)), 4),
-                "n_laps":             len(group),
+                "model":        model,
+                "split":        split,
+                "Era":          int(era),
+                "era_label":    ERA_LABEL.get(int(era), str(era)),
+                "all_laps_mae": round(mae, 4),
+                "green_mae":    round(b["per_era_green"].get(era, float("nan")), 4),
             })
+    df = pd.DataFrame(rows).sort_values(["split", "model", "Era"]).reset_index(drop=True)
+    df.to_csv(REPORTS_DIR / "per_era_mae.csv", index=False)
+    logger.info("per_era_mae.csv written (%d rows)", len(df))
+    return df
 
-    results_df = pd.DataFrame(rows)
-    if len(results_df) == 0:
-        logger.warning("No era data found — per_era_mae.csv will be empty")
-        return results_df
 
-    out_path = REPORTS_DIR / "per_era_mae.csv"
-    results_df.to_csv(out_path, index=False)
-    logger.info("Per-era MAE saved to %s", out_path)
-    logger.info("\n%s", results_df.to_string(index=False))
-    return results_df
+def write_greenflag(bd: dict) -> pd.DataFrame:
+    rows = []
+    for (model, split), b in bd.items():
+        rows.append({
+            "model":        model,
+            "split":        split,
+            "all_laps_mae": round(b["all_laps_mae"], 4),
+            "green_mae":    round(b["green_mae"], 4),
+            "delta":        round(b["all_laps_mae"] - b["green_mae"], 4),
+            "n_all":        b["n_all"],
+            "n_green":      b["n_green"],
+        })
+    df = pd.DataFrame(rows).sort_values(["split", "model"]).reset_index(drop=True)
+    df.to_csv(REPORTS_DIR / "greenflag_vs_alllaps_mae.csv", index=False)
+    logger.info("greenflag_vs_alllaps_mae.csv written (%d rows)", len(df))
+    return df
+
+
+def write_per_circuit(bd: dict) -> pd.DataFrame:
+    rows = []
+    for (model, split), b in bd.items():
+        for (era, circuit), mae in b["per_circuit"].items():
+            rows.append({
+                "model":      model,
+                "split":      split,
+                "Era":        int(era),
+                "CircuitKey": circuit,
+                "mae":        round(mae, 4),
+            })
+    df = (pd.DataFrame(rows)
+          .sort_values(["split", "model", "Era", "CircuitKey"])
+          .reset_index(drop=True))
+    df.to_csv(REPORTS_DIR / "per_circuit_mae.csv", index=False)
+    logger.info("per_circuit_mae.csv written (%d rows)", len(df))
+    return df
+
+
 # ---------------------------------------------------------------------------
-# 2. Learning curves
+# Learning curve (RF — train set, cross-validated)
 # ---------------------------------------------------------------------------
 
-def plot_learning_curves(
-    rf_model: RandomForestRegressor,
-    train_df: pd.DataFrame,
-) -> None:
-    """
-    Plot training MAE vs validation MAE as training set size increases.
-    Uses sklearn's learning_curve with 5 train-size steps.
-
-    Saved to reports/lap_time/learning_curve.png
-    """
+def plot_learning_curves(rf_model, train_df: pd.DataFrame) -> None:
     logger.info("Computing learning curves (this may take ~2 min on CPU)...")
+    from sklearn.base import clone
 
     X_train, y_train = get_X_y(train_df)
-
-    # Use a fresh RF with best params (can't reuse fitted model for learning_curve)
-    from sklearn.base import clone
-    model_clone = clone(rf_model)
-
     train_sizes, train_scores, val_scores = learning_curve(
-        model_clone,
-        X_train,
-        y_train,
+        clone(rf_model), X_train, y_train,
         train_sizes=np.linspace(0.1, 1.0, 5),
-        scoring="neg_mean_absolute_error",
-        cv=3,                   # 3-fold — small enough to run on CPU
-        n_jobs=-1,
-        verbose=0,
+        scoring="neg_mean_absolute_error", cv=3, n_jobs=-1, verbose=0,
     )
-
-    # Convert neg MAE → MAE
     train_mae = -train_scores.mean(axis=1)
     val_mae   = -val_scores.mean(axis=1)
-    train_std = train_scores.std(axis=1)
-    val_std   = val_scores.std(axis=1)
 
     fig, ax = plt.subplots(figsize=(8, 5))
     ax.plot(train_sizes, train_mae, "o-", color="#E8002D", label="Train MAE")
-    ax.fill_between(train_sizes,
-                    train_mae - train_std, train_mae + train_std,
-                    alpha=0.15, color="#E8002D")
-    ax.plot(train_sizes, val_mae, "o-", color="#1565C0", label="Val MAE (CV)")
-    ax.fill_between(train_sizes,
-                    val_mae - val_std, val_mae + val_std,
-                    alpha=0.15, color="#1565C0")
-
+    ax.plot(train_sizes, val_mae,   "o-", color="#1565C0", label="Val MAE (CV)")
     ax.set_xlabel("Training set size (laps)")
     ax.set_ylabel("MAE (seconds)")
     ax.set_title("Learning Curve — Random Forest Lap Time Predictor")
-    ax.legend()
-    ax.grid(True, alpha=0.3)
+    ax.legend(); ax.grid(True, alpha=0.3)
     plt.tight_layout()
-
     out_path = REPORTS_DIR / "learning_curve.png"
-    fig.savefig(out_path, dpi=150)
-    plt.close(fig)
+    fig.savefig(out_path, dpi=150); plt.close(fig)
     logger.info("Learning curve saved to %s", out_path)
-
     try:
         mlflow.log_artifact(str(out_path))
-    except Exception:
-        pass  # fine if no active MLflow run
-
-
-# ---------------------------------------------------------------------------
-# 3. SHAP feature importance
-# ---------------------------------------------------------------------------
-
-def plot_shap_summary(
-    rf_model: RandomForestRegressor,
-    val_df: pd.DataFrame,
-    max_display: int = 11,
-    sample_n: int = 500,
-) -> None:
-    """
-    Generate SHAP summary plot for the Random Forest model.
-
-    Uses a random sample of val_df for speed — SHAP on full RF is slow on CPU.
-    sample_n=500 gives a stable importance ranking in ~30s.
-
-    Saved to reports/lap_time/shap_summary.png
-
-    Interview point: SHAP values show *direction* of feature effect, not just
-    magnitude. A positive SHAP for FuelLoad means "high fuel → slower lap",
-    which matches physical intuition — good sanity check.
-    """
-    logger.info("Computing SHAP values (sample n=%d)...", sample_n)
-
-    X_val, _ = get_X_y(val_df)
-    feature_cols = [c for c in MODEL_FEATURE_COLUMNS if c in val_df.columns]
-
-    # Sample for speed
-    if len(X_val) > sample_n:
-        X_sample = X_val.sample(n=sample_n, random_state=42)
-    else:
-        X_sample = X_val
-
-    explainer   = shap.TreeExplainer(rf_model)
-    shap_values = explainer.shap_values(X_sample)
-
-    fig, ax = plt.subplots(figsize=(9, 6))
-    shap.summary_plot(
-        shap_values,
-        X_sample,
-        feature_names=feature_cols,
-        max_display=max_display,
-        show=False,
-        plot_size=None,
-    )
-    plt.title("SHAP Feature Importance — Random Forest Lap Time Predictor")
-    plt.tight_layout()
-
-    out_path = REPORTS_DIR / "shap_summary.png"
-    fig.savefig(out_path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    logger.info("SHAP summary saved to %s", out_path)
-
-    # Log mean absolute SHAP per feature
-    mean_shap = np.abs(shap_values).mean(axis=0)
-    shap_df = pd.DataFrame({
-        "feature":    feature_cols,
-        "mean_abs_shap": mean_shap,
-    }).sort_values("mean_abs_shap", ascending=False)
-    logger.info("\nFeature importance (mean |SHAP|):\n%s", shap_df.to_string(index=False))
-
-    shap_csv = REPORTS_DIR / "shap_importance.csv"
-    shap_df.to_csv(shap_csv, index=False)
-
-    try:
-        mlflow.log_artifact(str(out_path))
-        mlflow.log_artifact(str(shap_csv))
     except Exception:
         pass
 
 
 # ---------------------------------------------------------------------------
-# Main evaluation entry point
+# SHAP — chosen LightGBM model
+# ---------------------------------------------------------------------------
+
+def plot_shap_summary(model, val_df: pd.DataFrame, max_display: int = 14, sample_n: int = 1000) -> None:
+    """
+    SHAP summary for the chosen LightGBM model. Sampled for speed.
+
+    Sanity check we care about: TeamEncoded should carry real weight — that
+    validates the team-pace feature. Directional SHAP (high fuel -> slower) also
+    confirms the model learned physical intuition, not noise.
+    """
+    logger.info("Computing SHAP values for LightGBM (sample n=%d)...", sample_n)
+
+    X_val, _ = get_X_y(val_df)
+    feature_cols = [c for c in MODEL_FEATURE_COLUMNS if c in val_df.columns]
+
+    X_sample = X_val.sample(n=sample_n, random_state=42) if len(X_val) > sample_n else X_val
+
+    explainer   = shap.TreeExplainer(model)
+    shap_values = explainer.shap_values(X_sample)
+
+    fig, ax = plt.subplots(figsize=(9, 6))
+    shap.summary_plot(
+        shap_values, X_sample, feature_names=feature_cols,
+        max_display=max_display, show=False, plot_size=None,
+    )
+    plt.title("SHAP Feature Importance — LightGBM Lap Time Predictor")
+    plt.tight_layout()
+    out_path = REPORTS_DIR / "shap_summary.png"
+    fig.savefig(out_path, dpi=150, bbox_inches="tight"); plt.close(fig)
+    logger.info("SHAP summary saved to %s", out_path)
+
+    mean_shap = np.abs(shap_values).mean(axis=0)
+    shap_df = pd.DataFrame({"feature": feature_cols, "mean_abs_shap": mean_shap}) \
+        .sort_values("mean_abs_shap", ascending=False)
+    logger.info("\nFeature importance (mean |SHAP|):\n%s", shap_df.to_string(index=False))
+    shap_df.to_csv(REPORTS_DIR / "shap_importance.csv", index=False)
+
+    try:
+        mlflow.log_artifact(str(out_path))
+        mlflow.log_artifact(str(REPORTS_DIR / "shap_importance.csv"))
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# Main
 # ---------------------------------------------------------------------------
 
 def evaluate() -> None:
-    """Load trained models and run all evaluation steps."""
+    """Load trained models and run per-era + green-flag evaluation."""
 
-    # ---- load models -------------------------------------------------------
-    br_path = MODELS_DIR / "bayesian_ridge_lap.joblib"
-    rf_path = MODELS_DIR / "rf_lap.joblib"
-    sc_path = MODELS_DIR / "scaler_lap.joblib"
+    br_path   = MODELS_DIR / "bayesian_ridge_lap.joblib"
+    rf_path   = MODELS_DIR / "rf_lap.joblib"
+    lgbm_path = MODELS_DIR / "lgbm_lap.joblib"
 
-    for p in [br_path, rf_path, sc_path]:
+    for p in [br_path, rf_path, lgbm_path]:
         if not p.exists():
-            raise FileNotFoundError(
-                f"{p} not found. Run train.py first:\n"
-                "  python -m src.models.lap_time.train"
-            )
+            raise FileNotFoundError(f"{p} not found. Run train.py first.")
 
-    br_model  = joblib.load(br_path)
-    rf_model  = joblib.load(rf_path)
-    br_scaler = joblib.load(sc_path)
+    br_model   = joblib.load(br_path)    # sklearn Pipeline (encoder+scaler+BayesianRidge)
+    rf_model   = joblib.load(rf_path)
+    lgbm_model = joblib.load(lgbm_path)  # chosen model
     logger.info("Models loaded from %s", MODELS_DIR)
 
-    # ---- load data ---------------------------------------------------------
-    features_df = load_data()
+    features_df = load_eval_data()
     train_df, val_df, test_df = make_splits(features_df)
 
-    # ---- run evaluations ---------------------------------------------------
+    models = {"BayesianRidge": br_model, "RandomForest": rf_model, "LightGBM": lgbm_model}
+    splits = {"val": val_df, "test": test_df}
+
     mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
     mlflow.set_experiment(EXPERIMENT_NAME)
 
     with mlflow.start_run(run_name="evaluation"):
+        bd = run_breakdowns(models, splits)
 
-        # 1. Per-circuit MAE
-        results_df = evaluate_per_circuit(
-            br_model, br_scaler, rf_model, val_df, test_df
-        ) 
-        # After: results_df = evaluate_per_circuit(...)
-        era_df = evaluate_per_era(br_model, br_scaler, rf_model, val_df, test_df)
-        if len(era_df) > 0:
-            mlflow.log_artifact(str(REPORTS_DIR / "per_era_mae.csv"))
-        mlflow.log_artifact(str(REPORTS_DIR / "per_circuit_mae.csv"))
+        write_model_comparison(bd)
+        write_per_era(bd)
+        write_greenflag(bd)
+        write_per_circuit(bd)
+        for fname in ["model_comparison.csv", "per_era_mae.csv",
+                      "greenflag_vs_alllaps_mae.csv", "per_circuit_mae.csv"]:
+            try:
+                mlflow.log_artifact(str(REPORTS_DIR / fname))
+            except Exception:
+                pass
 
-        # 2. Learning curves (on train set — cross-validated)
-        plot_learning_curves(rf_model, train_df)
-
-        # 3. SHAP — only if val data is available
         if len(val_df) > 0:
-            plot_shap_summary(rf_model, val_df)
+            plot_learning_curves(rf_model, train_df)
+            plot_shap_summary(lgbm_model, val_df)
         else:
-            logger.warning("No val data — skipping SHAP. Fetch 2023 data first.")
+            logger.warning("No val data — skipping learning curve + SHAP.")
 
     logger.info("Evaluation complete. Reports in %s", REPORTS_DIR)
-    logger.info("Run: mlflow ui --port 5000  to view all runs")
 
 
 if __name__ == "__main__":
