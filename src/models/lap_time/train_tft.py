@@ -41,6 +41,7 @@ log = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 MODELS_DIR   = PROJECT_ROOT / "models"
+REPORTS_DIR  = PROJECT_ROOT / "reports" / "lap_time"
 EXPERIMENT_NAME = "lap_time_predictor"
 
 TRAIN_SEASONS = [2022, 2023, 2024]
@@ -144,46 +145,105 @@ def make_datasets(df: pd.DataFrame):
 # Evaluation
 # ---------------------------------------------------------------------------
 
-def green_mae(model: TemporalFusionTransformer,
-              dataloader,
-              raw_df: pd.DataFrame) -> dict[str, float]:
-    """MAE overall + green-flag only (TrackStatus=='1'). Section 13 rule 4.
+KEY_COLS = GROUP_IDS + ["time_idx"]
+GREEN = "1"  # TrackStatus all-green code (Section 13 rule 4)
 
-    Uses mode="prediction" (point forecast = 0.5 quantile for QuantileLoss) so we
-    never depend on quantile-column naming, which shifted across pf versions. With
-    return_index=True, pf returns either a namedtuple (.output tensor + .index df)
-    or — in some builds — a plain df; both are handled defensively.
-    yhat is aligned to the index POSITIONALLY (predict preserves row order), then
-    merged to raw_df on (GroupID, time_idx) for the actual target + TrackStatus.
-    """
-    preds = model.predict(dataloader, mode="prediction", return_index=True)
 
-    # --- extract point predictions + their index, regardless of return shape ----
+def _extract_index(preds):
+    """Pull (array, index_df) from a pf predict() result, robust to return shape.
+
+    With return_index=True, pf 1.7.0 returns a namedtuple (.output tensor + .index df);
+    some builds return a plain DataFrame. Predictions are aligned to the index
+    POSITIONALLY (predict preserves row order)."""
     if hasattr(preds, "output") and hasattr(preds, "index"):
-        out_t, idx = preds.output, preds.index.copy()
-        yhat = (out_t.cpu().numpy() if hasattr(out_t, "cpu") else np.asarray(out_t)).ravel()
+        out = preds.output
+        arr = out.cpu().numpy() if hasattr(out, "cpu") else np.asarray(out)
+        idx = preds.index.reset_index(drop=True)
     elif isinstance(preds, pd.DataFrame):
-        idx = preds.copy()
-        pred_cols = [c for c in idx.columns if c not in GROUP_IDS + ["time_idx"]]
-        yhat = idx[pred_cols[0]].to_numpy().ravel()  # single point col (max_pred_len=1)
-    else:  # bare tensor/array — no index; cannot align to TrackStatus
+        idx = preds.reset_index(drop=True)
+        cols = [c for c in idx.columns if c not in KEY_COLS]
+        arr = idx[cols].to_numpy()
+        idx = idx[KEY_COLS]
+    else:
         raise RuntimeError(f"Unexpected predict() return type: {type(preds)}")
+    return np.asarray(arr), idx
 
+
+def _point_merged(model: TemporalFusionTransformer, dataloader, raw_df: pd.DataFrame) -> pd.DataFrame:
+    """Point (median) prediction merged to actuals + eval metadata on lap identity.
+
+    Returns a df with: KEY_COLS, yhat, LapTimeSeconds, and whichever of
+    TrackStatus/Era/CircuitKey are present (for green / per-era / per-circuit splits).
+    """
+    arr, idx = _extract_index(model.predict(dataloader, mode="prediction", return_index=True))
+    yhat = arr.ravel()
     if len(yhat) != len(idx):
         raise RuntimeError(f"pred/index length mismatch: {len(yhat)} vs {len(idx)}")
-    idx = idx.reset_index(drop=True)
+    idx = idx.copy()
     idx["yhat"] = yhat.astype(float)
+    meta = [c for c in [TARGET, "TrackStatus", "Era", "CircuitKey"] if c in raw_df.columns]
+    return idx[KEY_COLS + ["yhat"]].merge(raw_df[KEY_COLS + meta], on=KEY_COLS, how="inner")
 
-    # --- merge actual target + TrackStatus on lap identity ----------------------
-    key_cols = GROUP_IDS + ["time_idx"]
-    need_cols = key_cols + [TARGET] + (["TrackStatus"] if "TrackStatus" in raw_df.columns else [])
-    j = idx[key_cols + ["yhat"]].merge(raw_df[need_cols], on=key_cols, how="inner")
 
+def green_mae(model: TemporalFusionTransformer, dataloader, raw_df: pd.DataFrame) -> dict[str, float]:
+    """MAE overall + green-flag only (TrackStatus=='1'). Section 13 rule 4."""
+    j = _point_merged(model, dataloader, raw_df)
     err = (j["yhat"] - j[TARGET]).abs()
     out: dict[str, float] = {"mae_all": float(err.mean())}
     if "TrackStatus" in j.columns:
-        g = j["TrackStatus"].astype(str) == "1"
+        g = j["TrackStatus"].astype(str) == GREEN
         out["mae_green"] = float(err[g].mean()) if g.any() else float("nan")
+    return out
+
+
+def breakdown(model: TemporalFusionTransformer, dataloader, raw_df: pd.DataFrame) -> pd.DataFrame:
+    """Per-era and per-(era,circuit) MAE, all-laps and green-only. Section 13 rules 2-4.
+    Returns a tidy df: columns [scope, key, laps, mae_all, mae_green]."""
+    j = _point_merged(model, dataloader, raw_df)
+    j["abs_err"] = (j["yhat"] - j[TARGET]).abs()
+    has_green = "TrackStatus" in j.columns
+    g = (j["TrackStatus"].astype(str) == GREEN) if has_green else pd.Series(False, index=j.index)
+
+    rows = [{"scope": "overall", "key": "all", "laps": len(j),
+             "mae_all": float(j["abs_err"].mean()),
+             "mae_green": float(j.loc[g, "abs_err"].mean()) if g.any() else float("nan")}]
+    if "Era" in j.columns:
+        for era, grp in j.groupby("Era"):
+            ge = g.loc[grp.index]
+            rows.append({"scope": "era", "key": str(era), "laps": len(grp),
+                         "mae_all": float(grp["abs_err"].mean()),
+                         "mae_green": float(grp.loc[ge, "abs_err"].mean()) if ge.any() else float("nan")})
+    if {"Era", "CircuitKey"}.issubset(j.columns):
+        for (era, circ), grp in j.groupby(["Era", "CircuitKey"]):
+            ge = g.loc[grp.index]
+            rows.append({"scope": "circuit", "key": f"{era}/{circ}", "laps": len(grp),
+                         "mae_all": float(grp["abs_err"].mean()),
+                         "mae_green": float(grp.loc[ge, "abs_err"].mean()) if ge.any() else float("nan")})
+    return pd.DataFrame(rows)
+
+
+def quantile_coverage(model: TemporalFusionTransformer, dataloader, raw_df: pd.DataFrame,
+                      quantiles: list[float] = QUANTILES) -> dict[str, float]:
+    """Calibration check (Section 13 rule 6): are the quantile intervals honest?
+
+    frac_below_q{q} should ≈ q; central_coverage (between outer quantiles) should ≈
+    quantiles[-1]-quantiles[0]. A great median MAE with miscalibrated intervals would
+    undercut the uncertainty story the simulation engine depends on.
+    """
+    arr, idx = _extract_index(model.predict(dataloader, mode="quantiles", return_index=True))
+    if arr.ndim == 3:      # [n, decoder_steps, q] -> single step
+        arr = arr[:, 0, :]
+    elif arr.ndim == 1:
+        arr = arr[:, None]
+    idx = idx.copy()
+    for i, q in enumerate(quantiles):
+        idx[f"q{q}"] = arr[:, i]
+    j = idx.merge(raw_df[KEY_COLS + [TARGET]], on=KEY_COLS, how="inner")
+
+    out = {f"frac_below_q{q}": float((j[TARGET] <= j[f"q{q}"]).mean()) for q in quantiles}
+    lo, hi = f"q{quantiles[0]}", f"q{quantiles[-1]}"
+    out["central_coverage"] = float(((j[TARGET] >= j[lo]) & (j[TARGET] <= j[hi])).mean())
+    out["central_nominal"] = quantiles[-1] - quantiles[0]
     return out
 
 
@@ -258,23 +318,41 @@ def main(fast: bool = False) -> None:
         trainer.fit(tft, train_dl, val_dl)
 
         best = TemporalFusionTransformer.load_from_checkpoint(ckpt.best_model_path)
+        REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 
         metrics: dict[str, float] = {}
-        if val_dl:
-            val_raw = prepare(df[df["Season"].isin(VAL_SEASONS)])
-            m_val   = green_mae(best, val_dl, val_raw)
-            metrics.update({f"val_{k}": v for k, v in m_val.items()})
-            log.info("VAL  %s", m_val)
-        if test_dl:
-            test_raw = prepare(df[df["Season"].isin(TEST_SEASONS)])
-            m_test   = green_mae(best, test_dl, test_raw)
-            metrics.update({f"test_{k}": v for k, v in m_test.items()})
-            log.info("TEST %s", m_test)
+        m_test: dict[str, float] = {}
+        bd_frames, cov_rows = [], []
+        for split, dl, seasons in [("val", val_dl, VAL_SEASONS), ("test", test_dl, TEST_SEASONS)]:
+            if dl is None:
+                continue
+            raw = prepare(df[df["Season"].isin(seasons)])
+            mae = green_mae(best, dl, raw)
+            cov = quantile_coverage(best, dl, raw)
+            bd  = breakdown(best, dl, raw); bd.insert(0, "split", split)
+            bd_frames.append(bd)
+            cov_rows.append({"split": split, **cov})
+            metrics.update({f"{split}_{k}": v for k, v in mae.items()})
+            metrics.update({f"{split}_{k}": v for k, v in cov.items()})
+            log.info("%s  MAE %s", split.upper(), mae)
+            log.info("%s  calibration %s", split.upper(), cov)
+            if split == "test":
+                m_test = mae
+
+        # report CSVs (consumed by evaluate.py's comparison table)
+        if bd_frames:
+            bd_all = pd.concat(bd_frames, ignore_index=True)
+            bd_all.to_csv(REPORTS_DIR / "tft_breakdown.csv", index=False)
+            pd.DataFrame(cov_rows).to_csv(REPORTS_DIR / "tft_calibration.csv", index=False)
+            log.info("Wrote tft_breakdown.csv + tft_calibration.csv -> %s", REPORTS_DIR)
 
         mlflow.log_metrics(metrics)
         export_cpu(best, MODELS_DIR / "tft_lap.pt")
         mlflow.log_artifact(str(MODELS_DIR / "tft_lap.pt"))
         mlflow.log_artifact(ckpt.best_model_path)
+        for fn in ("tft_breakdown.csv", "tft_calibration.csv"):
+            if (REPORTS_DIR / fn).exists():
+                mlflow.log_artifact(str(REPORTS_DIR / fn))
 
     bar = 2.14
     actual = metrics.get("test_mae_green", float("nan"))

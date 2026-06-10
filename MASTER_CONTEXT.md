@@ -279,13 +279,15 @@ v3 PHASES (no fixed weeks — quality first, sprint pace):
                 Chosen = LightGBM: green MAE 2.18s val(era0) / 2.14s test(era1) — generalizes across the
                 2026 boundary (within 6-race noise). RF kept as the era-collapse counter-example.
                 TeamEncoded validated (SHAP 6/14). Model card filled. per-era/green-flag/per-circuit/SHAP written.
-  [~] Phase 2 — TFT lap model. IN PROGRESS. Trainer + carry-back loader + quicktest notebook BUILT and
-                SMOKE-VALIDATED end-to-end on Colab GPU (fast run: train/val/checkpoint/green_mae/export/mlflow
-                all clean). Version triangle pinned (Section 3). Bugs found+fixed via smoke: carry-back cols,
-                EncoderNormalizer, mlflow file-store, version compat (Errors 11-14).
-                REMAINING: full 100-epoch run on A6000 (all seasons) → beat LightGBM's 2.14s green-test
-                honestly or report why not + calibrate quantiles.   <-- CURRENT
-  [ ] Phase 3 — Tyre degradation model: curve_fit + hierarchical pooling + CIs.
+  [x] Phase 2 — TFT lap model. DONE (full run on Kaggle T4, all seasons 2022-26).
+                RESULT: TFT BEATS LightGBM on green MAE both splits — val 1.11s (LGBM 2.18) / test 1.67s
+                (LGBM 2.14), i.e. ~halved. Win is legitimate: encoder uses past in-stint lap times (autoregressive,
+                no leakage) — the "laps are a sequence" thesis. ~85.6K params, hidden_size 32, ~26 epochs.
+                Bugs found+fixed across smoke+full: carry-back cols, EncoderNormalizer, mlflow file-store,
+                version compat, P100/cu128 arch, eval-subset predict=True->False (Errors 11-16).
+                REMAINING (small): read quantile calibration from reports/lap_time/tft_calibration.csv and fill
+                the model card; wire TFT row into evaluate.py's comparison table (breakdown CSV now emitted).
+  [ ] Phase 3 — Tyre degradation model: curve_fit + hierarchical pooling + CIs.   <-- CURRENT
   [ ] Phase 4 — Pit MDP + Monte Carlo simulation engine (THE SHOWCASE). Validate sim vs history.
   [ ] Phase 5 — STRETCH: RL pit agent in the simulator, vs MDP. Only if Phases 0-4 are solid.
   [ ] Phase 6 — FastAPI + Streamlit dashboard + HTML showcase page.
@@ -296,19 +298,21 @@ v3 PHASES (no fixed weeks — quality first, sprint pace):
 
 ## 9. Current blockers / next actions
 
-**Phase 2 — TFT full run on A6000 (CURRENT). Trainer is built + smoke-validated; remaining is the real run:**
-1. Connect to A6000 server; clone/pull repo; create env; `pip install` the pinned triangle (Section 3) + project deps.
-2. Verify `torch.cuda.is_available()` and GPU name.
-3. Ensure full data present on server: `data/raw/laps_*_r*.parquet` for 2022-2026 (gitignored — not in the
-   GitHub clone; rsync/upload or re-ingest). Smoke used a 28-file 2025+2026 zip; the full run needs all seasons.
-4. Full run: `python -m src.models.lap_time.train_tft` (100 epochs, EarlyStopping on val_loss, bs 512).
-5. Read VAL/TEST `mae_all` + `mae_green`; compare green to LightGBM bar (val 2.18s era0 / test 2.14s era1).
-6. Calibrate quantiles (0.1/0.5/0.9 coverage on val) — Section 13 rule 6.
-7. Wire TFT into `evaluate.py` comparison table (Ridge/RF/LGBM/TFT per-era + green) using `load_tft_data()`.
-8. Commit results; update model card; then "update master context".
+**Phase 2 — DONE (TFT beats LightGBM, full Kaggle T4 run). Small loose ends, then Phase 3:**
+1. Re-run `notebooks/04_tft_kaggle_fullrun.ipynb` once on Kaggle (T4) to emit the new
+   `reports/lap_time/tft_breakdown.csv` + `tft_calibration.csv` (added after the result run).
+   Download them + `models/tft_lap.{pt,ckpt}` (models/ + reports/ are gitignored — manual copy).
+2. Read `tft_calibration.csv`; fill the coverage numbers into the model card's Phase-2 caveat.
+   If intervals are miscalibrated, note it honestly (sim depends on these bands).
+3. (Optional) Concatenate `tft_breakdown.csv` into `evaluate.py`'s `model_comparison.csv` so all four
+   models sit in one per-era/green table. The breakdown CSV columns are split/scope/key/laps/mae_all/mae_green.
 
-**Watch on server:** num_workers (Colab warned 4>2 cores — fine on A6000); confirm `green_mae` predict
-column shape on pf 1.7.0 (smoke ran it but on tiny data); mlflow file-store env (handled in code).
+**Phase 3 — Tyre degradation (NEXT):** `src/models/tyre/fit.py` — `scipy.optimize.curve_fit`,
+quadratic `a + b·age + c·age²` per (compound × circuit × era), 95% CI from covariance, hierarchical
+pooling fallback for thin cells (esp. 2026). Uses `StintID`. Saves `models/tyre_curves.joblib`. See Sec 5/11.
+
+**Watch:** TFT win rests on autoregressive in-stint history — keep that framing in the writeup (it is the
+thesis, not leakage). 2026 test = 6 races, noisy. Kaggle: T4 not P100 (Error 15).
 
 ---
 
@@ -446,7 +450,11 @@ Read before writing any code. (Carried from v2 — all still valid.)
 
 13. **mlflow 3.x blocks the file:// store** — raises `MlflowException: filesystem tracking backend ... in maintenance mode` on the project's `mlruns` URI. Fix: `os.environ.setdefault("MLFLOW_ALLOW_FILE_STORE","true")` at import in train_tft_data.py (before any mlflow call). The same will hit `train.py`/`evaluate.py` on mlflow 3.x — set it there too or migrate to `sqlite:///mlflow.db`. FIXED in Phase 2 (train_tft path).
 
-14. **pytorch-forecasting / torch version mismatch** — pf 1.1.1 (an early pin) is incompatible with torch 2.11 (the server/venv torch). Use pf 1.7.0 + lightning 2.6.5 (Section 3). pf 1.7.0 also dropped `stop_randomization` (use `from_dataset(..., predict=True)`) and changed the `predict()` return shape (handled defensively in `green_mae`). RESOLVED in Phase 2.
+14. **pytorch-forecasting / torch version mismatch** — pf 1.1.1 (an early pin) is incompatible with torch 2.11 (the server/venv torch). Use pf 1.7.0 + lightning 2.6.5 (Section 3). pf 1.7.0 also dropped `stop_randomization` and changed the `predict()` return shape (handled defensively in `_extract_index`). RESOLVED in Phase 2.
+
+15. **Kaggle P100 + cu128 torch = `CUDA error: no kernel image`** — Kaggle's stock torch (2.10+cu128) is built for sm_70+ only; the P100 is sm_60, so it has no kernels at all. Fix: select **GPU T4** (sm_75, in the build), not P100. cell 1 of `notebooks/04_tft_kaggle_fullrun.ipynb` asserts the GPU arch to fail fast. RESOLVED in Phase 2.
+
+16. **TFT eval scored only the last lap per stint** — `from_dataset(..., predict=True)` keeps one window per series (the most-degraded last lap), so green MAE looked ~3-4s and lost to LightGBM. It also made `val_loss` (hence EarlyStopping/checkpoint) track that hard subset, halting training early at a worse model. Fix: `predict=False` for val/test → one prediction per decodable lap = fair per-lap comparison. After the fix TFT beats LightGBM (val 1.11 / test 1.67 green). One change fixed both the metric and the training. RESOLVED in Phase 2.
 
 ---
 
