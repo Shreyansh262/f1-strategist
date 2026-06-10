@@ -285,8 +285,11 @@ v3 PHASES (no fixed weeks — quality first, sprint pace):
                 no leakage) — the "laps are a sequence" thesis. ~85.6K params, hidden_size 32, ~26 epochs.
                 Bugs found+fixed across smoke+full: carry-back cols, EncoderNormalizer, mlflow file-store,
                 version compat, P100/cu128 arch, eval-subset predict=True->False (Errors 11-16).
-                REMAINING (small): read quantile calibration from reports/lap_time/tft_calibration.csv and fill
-                the model card; wire TFT row into evaluate.py's comparison table (breakdown CSV now emitted).
+                CALIBRATION: in-era (val) intervals roughly honest (central 0.76 vs 0.80 nominal); across the
+                2026 boundary OVERCONFIDENT (central 0.69, heavy lower tail) — recalibrate or document before
+                the sim trusts the bands. Per-circuit: great on conventional tracks (Japan 0.46s green), poor
+                on street circuits (Canada ~3s, Monaco ~2-2.8s). Reports: tft_breakdown.csv + tft_calibration.csv.
+                Model card filled. Artifacts (models/*.pt,*.ckpt) now gitignored — download from Kaggle manually.
   [ ] Phase 3 — Tyre degradation model: curve_fit + hierarchical pooling + CIs.   <-- CURRENT
   [ ] Phase 4 — Pit MDP + Monte Carlo simulation engine (THE SHOWCASE). Validate sim vs history.
   [ ] Phase 5 — STRETCH: RL pit agent in the simulator, vs MDP. Only if Phases 0-4 are solid.
@@ -298,14 +301,11 @@ v3 PHASES (no fixed weeks — quality first, sprint pace):
 
 ## 9. Current blockers / next actions
 
-**Phase 2 — DONE (TFT beats LightGBM, full Kaggle T4 run). Small loose ends, then Phase 3:**
-1. Re-run `notebooks/04_tft_kaggle_fullrun.ipynb` once on Kaggle (T4) to emit the new
-   `reports/lap_time/tft_breakdown.csv` + `tft_calibration.csv` (added after the result run).
-   Download them + `models/tft_lap.{pt,ckpt}` (models/ + reports/ are gitignored — manual copy).
-2. Read `tft_calibration.csv`; fill the coverage numbers into the model card's Phase-2 caveat.
-   If intervals are miscalibrated, note it honestly (sim depends on these bands).
-3. (Optional) Concatenate `tft_breakdown.csv` into `evaluate.py`'s `model_comparison.csv` so all four
-   models sit in one per-era/green table. The breakdown CSV columns are split/scope/key/laps/mae_all/mae_green.
+**Phase 2 — DONE.** TFT beats LightGBM (val 1.11 / test 1.67 green); reports + model card + calibration
+filled; artifacts gitignored. Deferred (do when the sim needs it, not now): recalibrate the TFT quantiles
+for the 2026 era (conformal / era-aware widening) — currently overconfident across the boundary; and
+optionally concat `tft_breakdown.csv` into `evaluate.py`'s `model_comparison.csv` (columns
+split/scope/key/laps/mae_all/mae_green) for a single four-model table.
 
 **Phase 3 — Tyre degradation (NEXT):** `src/models/tyre/fit.py` — `scipy.optimize.curve_fit`,
 quadratic `a + b·age + c·age²` per (compound × circuit × era), 95% CI from covariance, hierarchical

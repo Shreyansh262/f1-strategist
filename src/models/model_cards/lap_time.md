@@ -26,9 +26,19 @@ Green-flag = `TrackStatus == "1"` (~92% of laps). Safety-car / yellow laps accou
 
 **Why it beats LightGBM — and why that's legitimate, not leakage.** The TFT's edge is that it consumes each stint's *past lap times* in the encoder to predict the next lap; LightGBM treats every lap as an independent row. Past laps are known at prediction time and the decoder never sees the target lap's own value, so this is proper autoregressive use of in-stint history — exactly the "laps within a stint are a sequence" thesis the project is built on. The win shows up most on degradation dynamics a tree can't see from static tyre-age features alone.
 
+**Quantile calibration** (`reports/lap_time/tft_calibration.csv`; nominal central = 0.80 for the 0.1–0.9 band):
+
+| Split | frac<q0.1 (→0.10) | frac<q0.5 (→0.50) | frac<q0.9 (→0.90) | central coverage (→0.80) |
+|---|---|---|---|---|
+| Val 2025 (era0) | 0.113 | 0.499 | 0.868 | **0.756** |
+| Test 2026 (era1) | 0.146 | 0.542 | 0.836 | **0.690** |
+
+- **In-era (val) intervals are roughly honest** — central coverage 0.76 vs 0.80 nominal, median essentially unbiased (0.499). Mildly overconfident (bands a touch narrow).
+- **Across the era boundary (test) the model is overconfident** — central coverage drops to 0.69, with a heavy lower tail (14.6% fall below q0.1 vs 10% nominal) and a slight high-median bias (0.542). The intervals don't widen enough for the unseen 2026 regulations — the same cross-era degradation seen in the median MAE. **Before the simulation engine relies on these bands, recalibrate (e.g. conformal/era-aware widening) or document the under-coverage.**
+
 **Honesty caveats.**
-- The 2026 test set is only 6 races and statistically noisy — read 1.67s green with that caveat; the val/test gap (1.11→1.67) reflects the genuine cross-regulation shift plus small-sample noise.
-- **Quantile calibration** (do the 0.1–0.9 intervals cover ~80%?) is computed each run into `reports/lap_time/tft_calibration.csv` — fill the coverage numbers here once read. A strong median MAE with miscalibrated intervals would weaken the uncertainty story the simulation engine depends on; verify before trusting the bands.
+- The 2026 test set is only 6 races and statistically noisy — read 1.67s green with that caveat; the val→test gap (1.11→1.67 green) reflects the genuine cross-regulation shift plus small-sample noise.
+- **Per-circuit spread is large** (`reports/lap_time/tft_breakdown.csv`): green MAE is excellent on conventional tracks (Japan 0.46, Hungary 0.56, China 0.73) but poor on street/atypical circuits — Canada (val 2.96 / test 3.13) and Monaco (val 2.83 / test 2.07) are the worst. Aggregate green MAE hides this; the sim should treat street-circuit predictions as higher-variance.
 
 ## Key findings
 - **Cross-regulation generalization (the headline).** LightGBM green-lap MAE is 2.18s on val (era 0) vs 2.14s on test (era 1) — essentially flat across the 2022-25 → 2026 regulation boundary. A model trained only on ground-effect-era data carries that learning into the unseen active-aero era. **Caveat:** the 2026 test set is only 6 races, so test ≈ val means "generalizes within noise," not "generalizes *better* than val." A larger 2026 sample is needed to tighten this.

@@ -19,6 +19,11 @@ cache/
 # ── Trained model binaries ────────────────────────────────────────────────────
 models/*.joblib
 models/*.pkl
+models/*.pt
+models/*.ckpt
+
+# ── Artifact bundles (downloaded from Kaggle/server) ──────────────────────────
+*.zip
 
 # ── MLflow experiment tracking ────────────────────────────────────────────────
 mlruns/
