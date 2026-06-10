@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import glob
 import logging
+import os
 from pathlib import Path
 
 import pandas as pd
@@ -23,6 +24,11 @@ from src.pipeline.features import add_stint_id, build_features
 log = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
+
+# mlflow 3.x raises on the file:// store unless opted in. This project tracks to a
+# local mlruns dir by design (URI below), so opt in here — at import, before any
+# mlflow call in train_tft.py. setdefault so a sqlite backend can still override.
+os.environ.setdefault("MLFLOW_ALLOW_FILE_STORE", "true")
 
 # Re-export so train_tft.py only needs one import
 MLFLOW_TRACKING_URI: str = (PROJECT_ROOT / "mlruns").as_uri()
