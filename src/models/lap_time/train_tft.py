@@ -15,7 +15,12 @@ from __future__ import annotations
 
 import argparse
 import logging
+import warnings
 from pathlib import Path
+
+# EncoderNormalizer inverse-transforms via a fitted sklearn StandardScaler without
+# feature names during predict — one benign warning per batch, floods 100-epoch logs.
+warnings.filterwarnings("ignore", message="X does not have valid feature names")
 
 import numpy as np
 import pandas as pd

@@ -87,16 +87,23 @@ lightgbm
 optuna
 ```
 
-**TO INSTALL for v3 (only those NOT above):**
+**Phase 2 TFT — PINNED WORKING TRIANGLE (smoke-validated end-to-end on Colab GPU, 2026-06-10):**
 ```
-pytorch-forecasting      # TFT implementation (pulls in pytorch-lightning) — Phase 2
-pytorch-lightning        # training loop for TFT (dependency of above; pin a compatible version)
+pytorch-forecasting==1.7.0   # TFT implementation
+lightning==2.6.5             # unified package; import root is `lightning.pytorch`, NOT pytorch_lightning
+torch 2.11 (cu128)           # server/venv torch — pf 1.1.1 is INCOMPATIBLE with torch 2.11, must use pf>=1.7
+```
+Notes: pf 1.7.0 dropped `stop_randomization` → use `from_dataset(..., predict=True)` for val/test.
+mlflow 3.x blocks the file:// store unless `MLFLOW_ALLOW_FILE_STORE=true` (set in train_tft_data.py).
+
+**TO INSTALL later (only those NOT above):**
+```
 # RL STRETCH ONLY (do not install until Phase 5):
 stable-baselines3        # PPO/DQN for pit-strategy agent
 gymnasium                # RL environment API
 ```
 
-**RULE: Before any pip install, check this list. Only install what's NOT here. Update this list when something new is installed. Watch the torch / pytorch-lightning / pytorch-forecasting version triangle — it breaks easily. Pin versions once a working combo is found and record it here.**
+**RULE: Before any pip install, check this list. Only install what's NOT here. Update this list when something new is installed. Watch the torch / lightning / pytorch-forecasting version triangle — it breaks easily. The working combo is now pinned above — do not drift from it without re-running the quicktest.**
 
 ---
 
@@ -163,8 +170,33 @@ Trains the **baseline ladder** and logs all to MLflow:
 - Save: `models/bayesian_ridge_lap.joblib`, `models/rf_lap.joblib`, `models/lgbm_lap.joblib`, `models/scaler_lap.joblib`.
 - Does NOT import `ingest.py` — `load_data()` reads parquet directly.
 
-### NEW — `src/models/lap_time/train_tft.py` — STATUS: NOT STARTED (Phase 2)
-TFT trainer. Runs on the A6000. See Section 11 for architecture. Saves `models/tft_lap.ckpt` (+ exported `models/tft_lap.pt` for CPU inference). Logs to MLflow.
+### NEW — `src/models/lap_time/train_tft.py` — STATUS: BUILT + SMOKE-VALIDATED (Phase 2; full A6000 run pending)
+TFT trainer. Runs on the A6000. See Section 11 for architecture. Saves Lightning ckpt via
+ModelCheckpoint (+ exported `models/tft_lap.pt`, CPU-loadable, for serving). Logs to MLflow.
+- Loads via `load_tft_data()` (see below), NOT `train.load_data()` — needs raw cols build_features drops.
+- `prepare()` adds `GroupID` (Season_Round_Driver_StintID), contiguous `time_idx` (lap-in-stint),
+  `EraStr`/`CompoundStr`; imputes weather.
+- Feature roles BY NAME (Section 11): static_categoricals = CircuitKey, Team, EraStr, CompoundStr;
+  known reals = time_idx, NormLapNumber, FuelLoad, TyreLife; unknown reals = TrackTemp, AirTemp (+target).
+- **target_normalizer = `EncoderNormalizer()`** — NOT GroupNormalizer(GroupID): GroupID is unique per
+  stint, so under season splits every val/test group is unseen → KeyError. See Errors log #12.
+- `make_datasets()` returns (training, val|None, test|None) — val/test None when that season absent.
+- `green_mae()` uses `predict(mode="prediction", return_index=True)` (point=median), handles both
+  namedtuple and DataFrame return shapes; merges yhat to raw on (GroupID, time_idx) for actual + TrackStatus.
+- Smoke-validated on Colab (fast=True): data contract, GPU train, val loop, checkpoint, green_mae
+  predict+merge, CPU export, mlflow all run clean. Full 100-epoch run on A6000 still pending.
+
+### NEW — `src/models/lap_time/train_tft_data.py` — STATUS: DONE (Phase 2 carry-back loader)
+`load_tft_data()`: per-round dedup glob (Error 10) → `validate_laps` (once) → `add_stint_id` →
+`build_features` → merge `Team`/`Compound`/`StintID`/`TrackStatus` back on
+`LAP_KEYS=[Season,RoundNumber,Driver,LapNumber]`. build_features strips these (only FEATURE_COLUMNS
+survive), so sequence/eval models re-attach them here. Same trick as `evaluate.load_eval_data()`.
+Re-exports `MLFLOW_TRACKING_URI` (so train_tft.py needn't import train.py) and sets
+`MLFLOW_ALLOW_FILE_STORE=true` at import (mlflow 3.x guard, Error #13). Verified: ~87k laps, 92.4% green.
+
+### NEW — `notebooks/03_tft_quicktest.ipynb` — STATUS: DONE
+Colab/Kaggle smoke notebook: pins the triangle, clones + always `git pull`, runs `main(fast=True)`.
+Used to confirm the version triangle + data contract before committing the A6000 to a full run.
 
 ### CHANGE — `src/models/lap_time/evaluate.py` — STATUS: NEEDS UPDATE
 Outputs to `reports/lap_time/`: `per_circuit_mae.csv`, `per_era_mae.csv` (NEW), `greenflag_vs_alllaps_mae.csv` (NEW — MAE on green-flag laps vs all laps, the SC-impact story), `calibration.png` (NEW — do the TFT quantiles cover actual values?), `learning_curve.png`, `shap_summary.png`, `model_comparison.csv` (Ridge vs RF vs LGBM vs TFT, per-era). Imports `MLFLOW_TRACKING_URI` from `train.py` — do not redefine.
@@ -247,8 +279,12 @@ v3 PHASES (no fixed weeks — quality first, sprint pace):
                 Chosen = LightGBM: green MAE 2.18s val(era0) / 2.14s test(era1) — generalizes across the
                 2026 boundary (within 6-race noise). RF kept as the era-collapse counter-example.
                 TeamEncoded validated (SHAP 6/14). Model card filled. per-era/green-flag/per-circuit/SHAP written.
-  [ ] Phase 2 — TFT lap model on A6000. Beat LightGBM's 2.14s green-test honestly or report why not.
-                Calibrate quantiles. FIRST: set up A6000 env + install pytorch-forecasting/lightning.   <-- CURRENT
+  [~] Phase 2 — TFT lap model. IN PROGRESS. Trainer + carry-back loader + quicktest notebook BUILT and
+                SMOKE-VALIDATED end-to-end on Colab GPU (fast run: train/val/checkpoint/green_mae/export/mlflow
+                all clean). Version triangle pinned (Section 3). Bugs found+fixed via smoke: carry-back cols,
+                EncoderNormalizer, mlflow file-store, version compat (Errors 11-14).
+                REMAINING: full 100-epoch run on A6000 (all seasons) → beat LightGBM's 2.14s green-test
+                honestly or report why not + calibrate quantiles.   <-- CURRENT
   [ ] Phase 3 — Tyre degradation model: curve_fit + hierarchical pooling + CIs.
   [ ] Phase 4 — Pit MDP + Monte Carlo simulation engine (THE SHOWCASE). Validate sim vs history.
   [ ] Phase 5 — STRETCH: RL pit agent in the simulator, vs MDP. Only if Phases 0-4 are solid.
@@ -260,17 +296,19 @@ v3 PHASES (no fixed weeks — quality first, sprint pace):
 
 ## 9. Current blockers / next actions
 
-**Phase 0 — Migration (do these first, in order):**
-1. Set up the A6000 server env (clone repo, venv/conda, install Section 3 packages, verify `torch.cuda.is_available()`)
-2. Re-ingest 2026: `ingest_season(2026, rounds=[1,2,3,4,5,6])` (AUS, CHN, JPN, MIA, CAN, MON). Re-ingest 2025 fully if not already.
-3. Add `Team` passthrough to `extract_laps()` + verify it's non-null
-4. Add `add_team_encoding()` to features.py, save `team_map.json`, add `TeamEncoded` to `MODEL_FEATURE_COLUMNS`
-5. Verify Monaco laps survive the validate.py floor; widen to 70.0 if clipped; log filter drop counts
-6. Update `make_splits()` defaults + `assert_no_leakage()` for the team mapping
-7. Add/extend tests for `add_team_encoding` (frozen, -1 for unseen)
-8. Commit: "v3 Phase 0: 2026 re-ingest + Team encoding + Monaco fix"
+**Phase 2 — TFT full run on A6000 (CURRENT). Trainer is built + smoke-validated; remaining is the real run:**
+1. Connect to A6000 server; clone/pull repo; create env; `pip install` the pinned triangle (Section 3) + project deps.
+2. Verify `torch.cuda.is_available()` and GPU name.
+3. Ensure full data present on server: `data/raw/laps_*_r*.parquet` for 2022-2026 (gitignored — not in the
+   GitHub clone; rsync/upload or re-ingest). Smoke used a 28-file 2025+2026 zip; the full run needs all seasons.
+4. Full run: `python -m src.models.lap_time.train_tft` (100 epochs, EarlyStopping on val_loss, bs 512).
+5. Read VAL/TEST `mae_all` + `mae_green`; compare green to LightGBM bar (val 2.18s era0 / test 2.14s era1).
+6. Calibrate quantiles (0.1/0.5/0.9 coverage on val) — Section 13 rule 6.
+7. Wire TFT into `evaluate.py` comparison table (Ridge/RF/LGBM/TFT per-era + green) using `load_tft_data()`.
+8. Commit results; update model card; then "update master context".
 
-**Then Phase 1** — see Section 10.
+**Watch on server:** num_workers (Colab warned 4>2 cores — fine on A6000); confirm `green_mae` predict
+column shape on pf 1.7.0 (smoke ran it but on tiny data); mlflow file-store env (handled in code).
 
 ---
 
@@ -298,10 +336,11 @@ v3 PHASES (no fixed weeks — quality first, sprint pace):
 **Baseline ladder (Phase 1):** BayesianRidge (proper one-hot/target encoding for the linear model) → RandomForest → **LightGBM tuned with Optuna** (the bar to beat). Target `LapTimeSeconds`, features = `MODEL_FEATURE_COLUMNS`.
 
 **Headline (Phase 2): Temporal Fusion Transformer.** Use `pytorch-forecasting`'s `TemporalFusionTransformer` (pragmatic path; custom PyTorch fallback if the version triangle fights back).
-- **Sequence unit:** laps within a stint (group by Season-Round-Driver-StintID), time index = lap-in-stint.
-- **Static categoricals:** CircuitEncoded, TeamEncoded, Era, CompoundEncoded.
-- **Time-varying known:** lap number, fuel load (deterministic burn), tyre life.
-- **Time-varying observed:** track temp, air temp.
+- **Sequence unit:** laps within a stint (`GroupID` = Season_Round_Driver_StintID), `time_idx` = contiguous lap-in-stint.
+- **Static categoricals:** `CircuitKey`, `Team`, `EraStr`, `CompoundStr` — raw STRING cols with `NaNLabelEncoder(add_nan=True)` (library owns cardinalities; add_nan = unseen→sentinel). NOT the int-encoded versions (those are for the tree models).
+- **Time-varying known reals:** `time_idx`, `NormLapNumber`, `FuelLoad`, `TyreLife`.
+- **Time-varying unknown (observed) reals:** `TrackTemp`, `AirTemp` (+ target `LapTimeSeconds`).
+- **Target normalizer:** `EncoderNormalizer()` (per-stint, from its own encoder window) — see Errors #12.
 - **Output:** quantile predictions (e.g. 0.1/0.5/0.9) → median + calibrated interval. This replaces v2's MC-dropout hack with native uncertainty.
 - **Why TFT not TabTransformer:** laps in a stint are a genuine sequence with degradation dynamics; the A6000 makes a real sequence model trivial; quantile loss gives honest uncertainty; variable-length stints are handled by the library's encoder/decoder + masking.
 - **Feature roles by NAME, never positional index.** Declare `static_categoricals` / `time_varying_known_reals` / `time_varying_observed_reals` by column name; pytorch-forecasting builds the categorical encoders and cardinalities itself. The retired TabTransformer used positional constants (`CAT_FEATURE_INDICES`, `CONT_FEATURE_INDICES`, `CAT_CARDINALITIES`) that silently broke when a column was inserted — those are removed in v3 and must not return.
@@ -400,6 +439,14 @@ Read before writing any code. (Carried from v2 — all still valid.)
 **v3 watch-items (not yet bugs, prevent them):** Monaco 75s floor clipping; pytorch-forecasting version conflicts; tyre curve_fit failing on single short stints (needs pooling fallback); deployment host missing data/models (gitignored).
 
 10. **`load_data` double-counted every lap** — the `data/raw/*.parquet` glob matched both per-round files (`laps_YYYY_rNN.parquet`) AND `laps_YYYY_full.parquet` aggregates, so every lap loaded twice. Pre-fix MAEs/tuning/row-counts were on duplicated data. Fix: glob per-round only (`laps_*_r*.parquet`) + `.drop_duplicates(["Season","RoundNumber","Driver","LapNumber"])` guard after concat; `_full` aggregates must never be globbed by the trainer. FIXED in Phase 1.
+
+11. **TFT can't reuse `build_features()` output directly** — it restricts to `FEATURE_COLUMNS` and never calls `add_stint_id()`, so raw `Team`/`Compound` strings, `StintID`, and `TrackStatus` are gone. The first TFT draft assumed they survived and crashed immediately (`build_features(validate_laps(load_data()))` also double-validated a frame whose Compound string was already dropped). Fix: `train_tft_data.load_tft_data()` carries those cols back by merging on `LAP_KEYS` after build_features (validate runs once). Mirror this for any new lap sequence/eval code. FIXED in Phase 2.
+
+12. **TFT `GroupNormalizer(groups=["GroupID"])` KeyErrors on val/test** — GroupID is unique per stint, so a per-group target scale learned on train is missing for every unseen 2025/2026 stint → `KeyError: "Unknown category '2025_10_ALB_1'"`. Worked on a 2023-only smoke only because all groups were in train. Fix: `target_normalizer=EncoderNormalizer()` (scales each stint from its own encoder window, generalizes). General rule: no group-keyed encoder on a per-series id under this project's season splits. FIXED in Phase 2.
+
+13. **mlflow 3.x blocks the file:// store** — raises `MlflowException: filesystem tracking backend ... in maintenance mode` on the project's `mlruns` URI. Fix: `os.environ.setdefault("MLFLOW_ALLOW_FILE_STORE","true")` at import in train_tft_data.py (before any mlflow call). The same will hit `train.py`/`evaluate.py` on mlflow 3.x — set it there too or migrate to `sqlite:///mlflow.db`. FIXED in Phase 2 (train_tft path).
+
+14. **pytorch-forecasting / torch version mismatch** — pf 1.1.1 (an early pin) is incompatible with torch 2.11 (the server/venv torch). Use pf 1.7.0 + lightning 2.6.5 (Section 3). pf 1.7.0 also dropped `stop_randomization` (use `from_dataset(..., predict=True)`) and changed the `predict()` return shape (handled defensively in `green_mae`). RESOLVED in Phase 2.
 
 ---
 
