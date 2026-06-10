@@ -1,0 +1,17 @@
+{
+  "method": "split_conformal",
+  "scope": "green_flag_laps_only",
+  "alpha": 0.2,
+  "quantiles": [
+    0.1,
+    0.5,
+    0.9
+  ],
+  "calibrated_on": {
+    "era0": "2025 odd rounds (eval: even rounds)",
+    "era1": "2026 round 1 (eval: remaining 2026 rounds \u2014 R1 is excluded from test coverage reporting)"
+  },
+  "date": "2026-06-10",
+  "era0_shift_s": 0.0824,
+  "era1_shift_s": 0.8677
+}

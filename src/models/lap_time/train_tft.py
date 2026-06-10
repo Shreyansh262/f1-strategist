@@ -49,7 +49,12 @@ VAL_SEASONS   = [2025]
 TEST_SEASONS  = [2026]
 
 # Feature roles BY NAME (Section 11 — never positional index)
-STATIC_CATEGORICALS       = ["CircuitKey", "Team", "EraStr", "CompoundStr"]
+# V1 = the roles the first full Kaggle run was trained with (kept so the v1
+# checkpoint can be reloaded for recalibration). V2 adds driver skill and the
+# engine/PU supplier — the latter transfers across the 2026 boundary even for
+# brand-new teams (Cadillac is unseen as a Team but known as a Ferrari customer).
+STATIC_CATEGORICALS_V1    = ["CircuitKey", "Team", "EraStr", "CompoundStr"]
+STATIC_CATEGORICALS       = STATIC_CATEGORICALS_V1 + ["Driver", "EngineMaker"]
 TIME_VARYING_KNOWN_REALS  = ["time_idx", "NormLapNumber", "FuelLoad", "TyreLife"]
 TIME_VARYING_UNKNOWN_REALS = ["TrackTemp", "AirTemp"]
 TARGET    = "LapTimeSeconds"
@@ -81,6 +86,8 @@ def prepare(df: pd.DataFrame) -> pd.DataFrame:
     df["time_idx"]    = df.groupby("GroupID").cumcount().astype(int)
     df["EraStr"]      = df["Era"].astype(str)
     df["CompoundStr"] = df["Compound"].astype(str)
+    if "EngineMaker" in df.columns:
+        df["EngineMaker"] = df["EngineMaker"].fillna("UNKNOWN").astype(str)
     # Impute weather — median fill; carry-back already ran validate so nulls are rare
     for c in ("TrackTemp", "AirTemp"):
         med = df[c].median()
@@ -88,13 +95,17 @@ def prepare(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def make_datasets(df: pd.DataFrame):
+def make_datasets(df: pd.DataFrame, static_categoricals: list[str] | None = None):
     """Build TimeSeriesDataSet for train / val / test.
 
+    static_categoricals defaults to the current (v2) role list; pass
+    STATIC_CATEGORICALS_V1 to rebuild datasets compatible with the v1 checkpoint.
     Returns (training, validation, test) — val/test may be None if seasons absent.
     Encoders frozen from training set; NaNLabelEncoder(add_nan=True) handles
-    unseen circuits/teams at inference (equivalent to -1 sentinel, Section 6).
+    unseen circuits/teams/drivers at inference (equivalent to -1 sentinel, Section 6).
     """
+    static_categoricals = static_categoricals or STATIC_CATEGORICALS
+
     train_df = prepare(df[df["Season"].isin(TRAIN_SEASONS)])
     val_df   = prepare(df[df["Season"].isin(VAL_SEASONS)])
     test_df  = prepare(df[df["Season"].isin(TEST_SEASONS)])
@@ -102,7 +113,7 @@ def make_datasets(df: pd.DataFrame):
     if train_df.empty:
         raise ValueError("Training split is empty — check parquet files and TRAIN_SEASONS.")
 
-    cat_encoders = {c: NaNLabelEncoder(add_nan=True) for c in STATIC_CATEGORICALS}
+    cat_encoders = {c: NaNLabelEncoder(add_nan=True) for c in static_categoricals}
 
     training = TimeSeriesDataSet(
         train_df,
@@ -113,7 +124,7 @@ def make_datasets(df: pd.DataFrame):
         max_encoder_length=MAX_ENCODER_LENGTH,
         min_prediction_length=MIN_PREDICTION_LENGTH,
         max_prediction_length=MAX_PREDICTION_LENGTH,
-        static_categoricals=STATIC_CATEGORICALS,
+        static_categoricals=static_categoricals,
         time_varying_known_reals=TIME_VARYING_KNOWN_REALS,
         time_varying_unknown_reals=TIME_VARYING_UNKNOWN_REALS + [TARGET],
         # Per-stint scaling from each series' own encoder window — generalizes to

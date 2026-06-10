@@ -19,12 +19,15 @@ import pytest
 
 from src.pipeline.features import (
     COMPOUND_ORDER,
+    ENGINE_ORDER,
     FUEL_BURN_PER_LAP,
     FUEL_EFFECT_PER_KG,
     FUEL_LOAD_START_KG,
     MODEL_FEATURE_COLUMNS,
     ERA_BOUNDARY,
     add_circuit_encoding,
+    add_driver_encoding,
+    add_engine_maker,
     add_era_feature,
     add_stint_id,
     add_compound_encoding,
@@ -453,18 +456,21 @@ class TestMappingFreeze:
             "clobber the production data/mappings/*.json artifacts"
         )
 
-    def test_freeze_writes_both_mappings(self, tmp_path, monkeypatch):
+    def test_freeze_writes_all_mappings(self, tmp_path, monkeypatch):
         import json
         import src.pipeline.features as feat
         monkeypatch.setattr(feat, "MAPPINGS_DIR", tmp_path)
         df = make_minimal_df()
-        circuit_map, team_map = feat.freeze_encoding_mappings(df)
+        circuit_map, team_map, driver_map = feat.freeze_encoding_mappings(df)
         with open(tmp_path / "circuit_map.json") as f:
             assert json.load(f) == circuit_map
         with open(tmp_path / "team_map.json") as f:
             assert json.load(f) == team_map
+        with open(tmp_path / "driver_map.json") as f:
+            assert json.load(f) == driver_map
         assert circuit_map == {"bahrain": 0}
         assert team_map == {t: i for i, t in enumerate(sorted(df["Team"].unique()))}
+        assert driver_map == {d: i for i, d in enumerate(sorted(df["Driver"].unique()))}
 
     def test_load_roundtrip(self, tmp_path, monkeypatch):
         import src.pipeline.features as feat
@@ -482,3 +488,49 @@ def test_team_encoding_frozen_and_unseen():
     test = pd.DataFrame({"Team": ["Ferrari", "Cadillac"]})  # Cadillac unseen
     out2 = add_team_encoding(test, mapping=mapping)
     assert out2["TeamEncoded"].tolist() == [mapping["Ferrari"], -1]
+
+
+class TestEngineMaker:
+
+    def test_season_aware_supplier_switch(self):
+        """Aston Martin: Mercedes PU through 2025, Honda from 2026."""
+        df = pd.DataFrame({
+            "Team":   ["Aston Martin", "Aston Martin", "Alpine", "Alpine"],
+            "Season": [2025, 2026, 2025, 2026],
+        })
+        out = add_engine_maker(df)
+        assert out["EngineMaker"].tolist() == ["Mercedes", "Honda", "Renault", "Mercedes"]
+
+    def test_new_2026_team_has_known_engine(self):
+        """Cadillac is unseen as a Team but a known Ferrari customer — the
+        cross-era transfer story this feature exists for."""
+        df = pd.DataFrame({"Team": ["Cadillac", "Audi"], "Season": [2026, 2026]})
+        out = add_engine_maker(df)
+        assert out["EngineMaker"].tolist() == ["Ferrari", "Audi"]
+        assert (out["EngineEncoded"] >= 0).all()
+
+    def test_unknown_team_gets_sentinel(self):
+        df = pd.DataFrame({"Team": ["Brawn GP"], "Season": [2024]})
+        out = add_engine_maker(df)
+        assert out["EngineMaker"].isna().all()
+        assert (out["EngineEncoded"] == -1).all()
+
+    def test_encoding_matches_engine_order(self):
+        df = pd.DataFrame({"Team": ["Ferrari"], "Season": [2023]})
+        out = add_engine_maker(df)
+        assert out["EngineEncoded"].iloc[0] == ENGINE_ORDER["Ferrari"]
+
+
+class TestDriverEncoding:
+
+    def test_frozen_and_unseen_rookie(self):
+        mapping = {"HAM": 0, "VER": 1}
+        df = pd.DataFrame({"Driver": ["VER", "ROO"]})   # ROO = unseen rookie
+        out = add_driver_encoding(df, mapping=mapping)
+        assert out["DriverEncoded"].tolist() == [1, -1]
+
+    def test_inmemory_mode_does_not_save(self, tmp_path, monkeypatch):
+        import src.pipeline.features as feat
+        monkeypatch.setattr(feat, "MAPPINGS_DIR", tmp_path)
+        _ = feat.add_driver_encoding(pd.DataFrame({"Driver": ["VER"]}))
+        assert list(tmp_path.iterdir()) == []

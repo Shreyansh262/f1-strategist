@@ -1,7 +1,7 @@
 model,split,Era,era_label,all_laps_mae,green_mae
-BayesianRidge,test,1,active_aero,3.965,2.8785
-LightGBM,test,1,active_aero,3.4243,2.1143
-RandomForest,test,1,active_aero,9.0504,8.5157
-BayesianRidge,val,0,ground_effect,4.1622,2.9671
-LightGBM,val,0,ground_effect,3.5085,2.1561
-RandomForest,val,0,ground_effect,6.4512,5.6124
+BayesianRidge,test,1,active_aero,4.1939,3.0854
+LightGBM,test,1,active_aero,3.534,2.2165
+RandomForest,test,1,active_aero,8.8715,8.3039
+BayesianRidge,val,0,ground_effect,4.349,3.1348
+LightGBM,val,0,ground_effect,3.4855,2.1445
+RandomForest,val,0,ground_effect,6.4737,5.6294

@@ -1,0 +1,10 @@
+circuit,mdp_n_stops,mdp_stops,driver,actual_n_stops,actual_pit_laps,actual_compounds
+Bahrain Grand Prix,2,"[(17, 'HARD'), (37, 'HARD')]",PIA,2,"[14, 32]","['SOFT', 'MEDIUM']"
+Bahrain Grand Prix,2,"[(17, 'HARD'), (37, 'HARD')]",RUS,2,"[13, 32]","['SOFT', 'MEDIUM', 'SOFT']"
+Bahrain Grand Prix,2,"[(17, 'HARD'), (37, 'HARD')]",NOR,2,"[10, 32]","['SOFT', 'MEDIUM']"
+Spanish Grand Prix,2,"[(20, 'HARD'), (43, 'HARD')]",PIA,3,"[22, 49, 55]","['SOFT', 'MEDIUM', 'SOFT']"
+Spanish Grand Prix,2,"[(20, 'HARD'), (43, 'HARD')]",NOR,3,"[21, 48, 55]","['SOFT', 'MEDIUM', 'SOFT']"
+Spanish Grand Prix,2,"[(20, 'HARD'), (43, 'HARD')]",LEC,3,"[17, 40, 55]","['SOFT', 'MEDIUM', 'SOFT']"
+Monaco Grand Prix,1,"[(78, 'SOFT')]",NOR,2,"[19, 50]","['MEDIUM', 'HARD']"
+Monaco Grand Prix,1,"[(78, 'SOFT')]",LEC,2,"[22, 49]","['MEDIUM', 'HARD', 'MEDIUM']"
+Monaco Grand Prix,1,"[(78, 'SOFT')]",PIA,2,"[20, 48]","['MEDIUM', 'HARD']"

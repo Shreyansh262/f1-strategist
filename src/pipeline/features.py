@@ -136,27 +136,33 @@ def _freeze_mapping(values: pd.Series, filename: str, save: bool) -> dict[str, i
     return mapping
 
 
-def freeze_encoding_mappings(train_df: pd.DataFrame) -> tuple[dict[str, int], dict[str, int]]:
-    """Build AND persist circuit/team mappings from the TRAINING split only.
+def freeze_encoding_mappings(
+    train_df: pd.DataFrame,
+) -> tuple[dict[str, int], dict[str, int], dict[str, int]]:
+    """Build AND persist circuit/team/driver mappings from the TRAINING split only.
 
     This is the single sanctioned writer of data/mappings/*.json. Mappings must be
-    frozen from train so unseen val/test circuits/teams hit the -1 sentinel path —
-    the same path a genuinely new team takes at serving time (Section 5/6).
+    frozen from train so unseen val/test circuits/teams/drivers hit the -1 sentinel
+    path — the same path a genuinely new entrant takes at serving time (Section 5/6).
+    (EngineMaker is NOT here: its dictionary is fixed domain knowledge, see ENGINE_ORDER.)
 
-    Returns (circuit_mapping, team_mapping).
+    Returns (circuit_mapping, team_mapping, driver_mapping).
     """
     circuit_map = _freeze_mapping(train_df["CircuitKey"], "circuit_map.json", save=True)
     team_map    = _freeze_mapping(train_df["Team"],       "team_map.json",    save=True)
-    return circuit_map, team_map
+    driver_map  = _freeze_mapping(train_df["Driver"],     "driver_map.json",  save=True)
+    return circuit_map, team_map, driver_map
 
 
-def load_encoding_mappings() -> tuple[dict[str, int], dict[str, int]]:
-    """Load the frozen circuit/team mappings for inference/serving."""
+def load_encoding_mappings() -> tuple[dict[str, int], dict[str, int], dict[str, int]]:
+    """Load the frozen circuit/team/driver mappings for inference/serving."""
     with open(MAPPINGS_DIR / "circuit_map.json") as f:
         circuit_map = json.load(f)
     with open(MAPPINGS_DIR / "team_map.json") as f:
         team_map = json.load(f)
-    return circuit_map, team_map
+    with open(MAPPINGS_DIR / "driver_map.json") as f:
+        driver_map = json.load(f)
+    return circuit_map, team_map, driver_map
 
 
 def add_circuit_encoding(
@@ -218,6 +224,49 @@ def add_team_encoding(
             "New teams may need adding to team_map.json.",
             n_unseen,
         )
+    return df
+
+
+def add_engine_maker(df: pd.DataFrame) -> pd.DataFrame:
+    """Add EngineMaker (str) + EngineEncoded (int) from the season-aware
+    team→PU dictionary. Unknown team→engine pairs encode to -1 (and log) —
+    that path only fires if a team appears that the dictionary predates.
+
+    Leakage check: supplier contracts are public long before a season starts;
+    the dictionary is fixed domain knowledge, not learned from data.
+    """
+    df = df.copy()
+    df["EngineMaker"] = [
+        engine_for(t, s) for t, s in zip(df["Team"], df["Season"])
+    ]
+    n_unknown = df["EngineMaker"].isna().sum()
+    if n_unknown > 0:
+        logger.warning(
+            "%d rows have a Team/Season with no engine mapping — EngineEncoded=-1. "
+            "Teams: %s. Update _ENGINE_* dicts in features.py.",
+            n_unknown, sorted(df.loc[df["EngineMaker"].isna(), "Team"].unique()),
+        )
+    df["EngineEncoded"] = df["EngineMaker"].map(ENGINE_ORDER).fillna(-1).astype(int)
+    return df
+
+
+def add_driver_encoding(
+    df: pd.DataFrame,
+    mapping: dict[str, int] | None = None,
+) -> pd.DataFrame:
+    """Label-encode Driver using a frozen mapping (mirrors team encoding).
+
+    Driver skill is a real, persistent lap-time signal (~0.1-0.5 s/lap within
+    a team). Known before the race — no leakage. Unseen (rookie) drivers → -1.
+    mapping=None builds in-memory only; freeze_encoding_mappings persists.
+    """
+    df = df.copy()
+    if mapping is None:
+        mapping = _freeze_mapping(df["Driver"], "driver_map.json", save=False)
+    df["DriverEncoded"] = df["Driver"].map(mapping).fillna(-1).astype(int)
+    n_unseen = (df["DriverEncoded"] == -1).sum()
+    if n_unseen > 0:
+        logger.warning("%d rows have unseen Driver (encoded as -1).", n_unseen)
     return df
 
 
@@ -354,8 +403,11 @@ FEATURE_COLUMNS: Final[list[str]] = [
     "LapTimeSeconds",
     # Identity (grouping / eval — NOT model inputs)
     "Driver", "Season", "RoundNumber", "CircuitKey", "LapNumber",
+    # String categorical kept for the TFT (static categorical input)
+    "EngineMaker",
     # Model features
-    "CircuitEncoded", "TeamEncoded", "CompoundEncoded", "Era",
+    "CircuitEncoded", "TeamEncoded", "DriverEncoded", "EngineEncoded",
+    "CompoundEncoded", "Era",
     "TyreLife", "TyreAgeSq", "TyreAgeCubed",
     "CompoundXTyreLife", "FuelLoad", "FuelEffect",
     "TrackTemp", "AirTemp", "NormLapNumber", "StintPhase",
@@ -363,7 +415,8 @@ FEATURE_COLUMNS: Final[list[str]] = [
 
 MODEL_FEATURE_COLUMNS: Final[list[str]] = [
     # Exactly the columns passed to model.fit() / model.predict()
-    "CircuitEncoded", "TeamEncoded", "CompoundEncoded", "Era",
+    "CircuitEncoded", "TeamEncoded", "DriverEncoded", "EngineEncoded",
+    "CompoundEncoded", "Era",
     "TyreLife", "TyreAgeSq", "TyreAgeCubed",
     "CompoundXTyreLife", "FuelLoad", "FuelEffect",
     "TrackTemp", "AirTemp", "NormLapNumber", "StintPhase",
@@ -378,6 +431,7 @@ def build_features(
     df: pd.DataFrame,
     circuit_mapping: dict[str, int] | None = None,
     team_mapping: dict[str, int] | None = None,
+    driver_mapping: dict[str, int] | None = None,
 ) -> pd.DataFrame:
     """
     Apply all feature engineering transforms in the correct order.
@@ -386,12 +440,10 @@ def build_features(
     ----------
     df : pd.DataFrame
         Validated laps DataFrame from validate.py.
-    circuit_mapping : dict[str, int] | None
-        Training mode  (None)   : builds mapping from df, saves circuit_map.json.
-        Inference mode (dict)   : uses supplied mapping; unseen circuits → -1.
-    team_mapping : dict[str, int] | None
-        Training mode  (None)   : builds mapping from df, saves team_map.json.
-        Inference mode (dict)   : uses supplied mapping; unseen teams → -1.
+    circuit_mapping / team_mapping / driver_mapping : dict[str, int] | None
+        None : builds an in-memory mapping from df (never saved — use
+               freeze_encoding_mappings to persist train-frozen mappings).
+        dict : uses the supplied frozen mapping; unseen values → -1.
 
     Returns
     -------
@@ -403,6 +455,8 @@ def build_features(
     df = add_compound_encoding(df)
     df = add_circuit_encoding(df, mapping=circuit_mapping)
     df = add_team_encoding(df, mapping=team_mapping)
+    df = add_driver_encoding(df, mapping=driver_mapping)
+    df = add_engine_maker(df)
     df = add_era_feature(df)
     df = impute_weather(df)
     df = add_fuel_load(df)

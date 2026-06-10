@@ -1,0 +1,127 @@
+{
+  "Abu Dhabi Grand Prix": {
+    "iqr_s": 2.9,
+    "n_events": 64,
+    "pit_loss_s": 23.34
+  },
+  "Australian Grand Prix": {
+    "iqr_s": 3.12,
+    "n_events": 54,
+    "pit_loss_s": 21.56
+  },
+  "Austrian Grand Prix": {
+    "iqr_s": 2.27,
+    "n_events": 137,
+    "pit_loss_s": 21.51
+  },
+  "Azerbaijan Grand Prix": {
+    "iqr_s": 2.99,
+    "n_events": 52,
+    "pit_loss_s": 22.43
+  },
+  "Bahrain Grand Prix": {
+    "iqr_s": 2.72,
+    "n_events": 142,
+    "pit_loss_s": 24.81
+  },
+  "Belgian Grand Prix": {
+    "iqr_s": 3.88,
+    "n_events": 131,
+    "pit_loss_s": 19.64
+  },
+  "British Grand Prix": {
+    "iqr_s": 14.19,
+    "n_events": 89,
+    "pit_loss_s": 29.36
+  },
+  "Canadian Grand Prix": {
+    "iqr_s": 4.16,
+    "n_events": 85,
+    "pit_loss_s": 20.27
+  },
+  "Chinese Grand Prix": {
+    "iqr_s": 2.49,
+    "n_events": 50,
+    "pit_loss_s": 24.56
+  },
+  "Dutch Grand Prix": {
+    "iqr_s": 8.61,
+    "n_events": 112,
+    "pit_loss_s": 23.98
+  },
+  "Emilia Romagna Grand Prix": {
+    "iqr_s": 22.37,
+    "n_events": 59,
+    "pit_loss_s": 29.17
+  },
+  "Hungarian Grand Prix": {
+    "iqr_s": 3.31,
+    "n_events": 136,
+    "pit_loss_s": 21.61
+  },
+  "Italian Grand Prix": {
+    "iqr_s": 3.2,
+    "n_events": 93,
+    "pit_loss_s": 25.69
+  },
+  "Japanese Grand Prix": {
+    "iqr_s": 4.3,
+    "n_events": 119,
+    "pit_loss_s": 23.95
+  },
+  "Las Vegas Grand Prix": {
+    "iqr_s": 3.87,
+    "n_events": 69,
+    "pit_loss_s": 23.59
+  },
+  "Mexico City Grand Prix": {
+    "iqr_s": 2.1,
+    "n_events": 86,
+    "pit_loss_s": 23.31
+  },
+  "Miami Grand Prix": {
+    "iqr_s": 2.4,
+    "n_events": 75,
+    "pit_loss_s": 20.33
+  },
+  "Monaco Grand Prix": {
+    "iqr_s": 6.79,
+    "n_events": 88,
+    "pit_loss_s": 20.34
+  },
+  "Qatar Grand Prix": {
+    "iqr_s": 2.84,
+    "n_events": 41,
+    "pit_loss_s": 29.69
+  },
+  "Saudi Arabian Grand Prix": {
+    "iqr_s": 3.37,
+    "n_events": 36,
+    "pit_loss_s": 21.64
+  },
+  "Singapore Grand Prix": {
+    "iqr_s": 7.79,
+    "n_events": 50,
+    "pit_loss_s": 27.33
+  },
+  "Spanish Grand Prix": {
+    "iqr_s": 2.82,
+    "n_events": 176,
+    "pit_loss_s": 23.29
+  },
+  "S\u00e3o Paulo Grand Prix": {
+    "iqr_s": 2.13,
+    "n_events": 102,
+    "pit_loss_s": 22.34
+  },
+  "United States Grand Prix": {
+    "iqr_s": 2.53,
+    "n_events": 101,
+    "pit_loss_s": 21.55
+  },
+  "_global": {
+    "iqr_s": 4.86,
+    "n_events": 2153,
+    "pit_loss_s": 23.05
+  }
+}

@@ -11,7 +11,11 @@ __pycache__/
 *$py.class
 
 # ── Data — never commit raw parquet files ─────────────────────────────────────
-data/
+# (data/* + exceptions instead of data/ — git cannot re-include children of an
+#  ignored directory; mappings + pit_loss are small required serving artifacts)
+data/*
+!data/mappings/
+!data/pit_loss.json
 
 # ── FastF1 cache — large binary files ─────────────────────────────────────────
 cache/
@@ -27,6 +31,9 @@ models/*.ckpt
 
 # ── MLflow experiment tracking ────────────────────────────────────────────────
 mlruns/
+
+# ── Lightning logs (created by local CPU predict/recalibrate runs) ────────────
+lightning_logs/
 
 # ── Reports — generated artefacts (optional: remove if you want them in repo) ─
 # reports/

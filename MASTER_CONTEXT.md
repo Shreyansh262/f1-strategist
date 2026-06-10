@@ -1,11 +1,17 @@
-# F1 AI Race Strategist — Master Context v3.1
+# F1 AI Race Strategist — Master Context v3.2
 ### Paste this at the start of every new Claude conversation
 ### v3 supersedes v2. Scope = "depth, then one ambitious showcase."
-### v3.1 (2026-06-10): Phase 3 (tyre curves) DELIVERED; mapping-freeze contract fixed + ladder
-### retrained; README written; Section 10 rewritten as step-by-step PHASE PLAYBOOKS detailed
-### enough for any model (or human) to execute without re-deriving design decisions.
-### GPU note: A6000 access ended up unused — Phase 2 ran on Kaggle T4. ~28 Kaggle GPU hours
-### remain; Section 10.0 says exactly what to spend them on.
+### v3.1 (2026-06-10): Phase 3 (tyre curves) DELIVERED; mapping-freeze contract fixed; README;
+### Section 10 rewritten as step-by-step PHASE PLAYBOOKS.
+### v3.2 (2026-06-10, same day): Phases 3.5 + 4 DELIVERED AND VALIDATED —
+###   - EngineMaker (season-aware team→PU dictionary) + DriverEncoded features, ablation run
+###   - TFT conformal recalibration run locally on CPU (era-0 coverage 0.800 on the nose)
+###   - pit_loss.py (2,153 measured events), mdp.py (exact backward induction),
+###     simulation/engine.py (vectorized MC showcase), validate_sim.py (replay coverage 0.79)
+###   - notebooks/05_tft_v2_kaggle.ipynb ready: TFT v2 (Driver+EngineMaker static cats)
+###   - TUTOR.md added: full teaching walkthrough of the project for interview prep
+### GPU note: Phase 2 ran on Kaggle T4. ~28 Kaggle GPU hours remain; next GPU job =
+### notebook 05 (TFT v2 + recalibration, ~2-4h). Then RL (Phase 5, ~10h).
 
 ---
 
@@ -97,8 +103,10 @@ optuna
 ```
 pytorch-forecasting==1.7.0   # TFT implementation
 lightning==2.6.5             # unified package; import root is `lightning.pytorch`, NOT pytorch_lightning
-torch 2.11 (cu128)           # server/venv torch — pf 1.1.1 is INCOMPATIBLE with torch 2.11, must use pf>=1.7
+torch 2.11 (cu128)           # Kaggle GPU torch — pf 1.1.1 is INCOMPATIBLE with torch 2.11, must use pf>=1.7
 ```
+v3.2: pf 1.7.0 + lightning 2.6.5 are now ALSO installed in the LOCAL venv (CPU torch 2.11) —
+recalibrate.py and the TFT tests run locally; only training needs the Kaggle GPU.
 Notes: pf 1.7.0 dropped `stop_randomization` → use `from_dataset(..., predict=True)` for val/test.
 mlflow 3.x blocks the file:// store unless `MLFLOW_ALLOW_FILE_STORE=true` (set in train_tft_data.py).
 
@@ -138,15 +146,25 @@ Ground truth for every file. New code must match. Do not rename columns or chang
 - `tests/` — **COMPLETE: 50 tests passing locally** (test_features 44 incl. mapping-freeze contract, test_tyre 9, test_tft skips cleanly when lightning absent via `pytest.importorskip`).
 - `conftest.py` — **COMPLETE.**
 
-### `src/pipeline/features.py` — STATUS: COMPLETE (v3.1 mapping-freeze contract)
+### `src/pipeline/features.py` — STATUS: COMPLETE (v3.2 — engine + driver features)
 ```python
 def add_circuit_encoding(df, mapping=None) -> pd.DataFrame  # mapping=None builds IN-MEMORY only (no save)
 def add_team_encoding(df, mapping=None) -> pd.DataFrame     # same; unseen -> -1
-def freeze_encoding_mappings(train_df) -> (dict, dict)      # THE ONLY writer of data/mappings/*.json
-def load_encoding_mappings() -> (dict, dict)                # for eval/serving
+def add_driver_encoding(df, mapping=None) -> pd.DataFrame   # NEW v3.2 — frozen like team; rookies -> -1
+def add_engine_maker(df) -> pd.DataFrame                    # NEW v3.2 — EngineMaker str + EngineEncoded int
+def engine_for(team, season) -> str | None                  # season-aware team→PU dictionary
+def freeze_encoding_mappings(train_df) -> (dict, dict, dict)  # THE ONLY writer of data/mappings/*.json
+def load_encoding_mappings() -> (dict, dict, dict)          # circuit, team, driver — for eval/serving
 def add_era_feature(df) -> pd.DataFrame                     # 2022-2025=0, 2026+=1
 def add_stint_id(df) -> pd.DataFrame                        # per driver per race
 ```
+**EngineMaker design:** `_ENGINE_2022_2025` + `_ENGINE_2026_OVERRIDES` dicts (Aston Mercedes→Honda,
+Alpine Renault→Mercedes, RBR Honda→Red Bull Ford, Audi=Audi, Cadillac=Ferrari customer...).
+`ENGINE_ORDER` is fixed a-priori over ALL known engines (incl. 2026) — domain knowledge like the
+Era boundary, NOT frozen-from-train (no leakage: supplier contracts are public pre-season). Its
+purpose is cross-era transfer: Cadillac is unseen as a Team but a known Ferrari customer.
+`MODEL_FEATURE_COLUMNS` is now 16 features (added DriverEncoded, EngineEncoded); `FEATURE_COLUMNS`
+also carries the `EngineMaker` string through for the TFT.
 **Contract (v3.1, Errors #17):** `mapping=None` must NEVER persist to disk — tests/notebooks
 used to clobber the production mappings. Only `freeze_encoding_mappings(train_rows)` writes
 JSON, and it must be fed TRAIN seasons only so unseen 2026 teams (Audi, Cadillac, Racing
@@ -230,16 +248,39 @@ per-lap noise from traffic/management dominates — b,c CIs are what matter). Sa
 MLflow experiment `tyre_degradation`. Tests: `tests/test_tyre.py` (synthetic b,c recovery,
 pooling fallback, fuel-correction, predict band). Model card: `src/models/model_cards/tyre_degradation.md`.
 
-### NEW — `src/models/lap_time/recalibrate.py` — STATUS: NOT STARTED (Phase 3.5 — NEXT)
-Conformal recalibration of the TFT quantile bands. Full playbook: Section 10.2.
+### `src/models/lap_time/recalibrate.py` — STATUS: ✅ DONE (Phase 3.5, v3.2)
+Era-aware split-conformal widening of the TFT 0.1–0.9 band, GREEN-FLAG LAPS ONLY (Error 20).
+Calib/eval disjoint: era0 = odd/even 2025 rounds; era1 = 2026 R1 / R2-6. Loads tft_lap.ckpt
+with CPU-safe overrides (`loss=QuantileLoss(...)`, `logging_metrics=ModuleList()` — pickled
+metrics remember device=cuda, Error 21); rebuilds datasets via `model.dataset_parameters` +
+`TimeSeriesDataSet.from_parameters` so encoders match training exactly. Outputs
+`models/tft_calibration.json` (era0_shift_s / era1_shift_s) + `reports/lap_time/tft_recalibration.csv`.
+Rerun INSIDE the Kaggle notebook whenever the TFT is retrained.
 
-### NEW — `src/models/pit_strategy/mdp.py` — STATUS: NOT STARTED (Phase 4a)
-Value iteration in NumPy. Full playbook with state/action/transition/undercut spec: Section 10.3.
+### `src/models/pit_strategy/pit_loss.py` — STATUS: ✅ DONE (Phase 4a, v3.2)
+Measures pit loss per green-flag pit event: (in-lap + out-lap) − 2×driver race green median;
+both laps must be green; loss clipped to [5,60]s. 2,153 events → per-circuit medians (min 8
+events, else `_global` 23.05s) in `data/pit_loss.json`. API: `load_pit_loss()`, `pit_loss_for()`.
 
-### NEW — `src/simulation/engine.py` — STATUS: NOT STARTED (Phase 4b — THE SHOWCASE)
-Monte Carlo race-simulation engine. Full playbook with dataclass contract, per-lap loop,
-overtaking model, and the historical-replay validation protocol: Section 10.4. Vectorized with
-torch tensors (CPU-first; GPU only for big sweeps). Stateless — outputs feed dashboard/API.
+### `src/models/pit_strategy/mdp.py` — STATUS: ✅ DONE (Phase 4a, v3.2)
+Exact backward induction (finite horizon = exact in one sweep). State (lap, compound, age≤45,
+used_two_compounds); pit happens at END of lap; fresh stint age = 2 (validate drops TyreLife==1).
+Two-compound rule via terminal V=inf if not satisfied. `build_race_model()` wires tyre curves +
+pit table; `solve()` returns strategy + policy/value grids; `plot_policy()` heatmaps. SINGLE-CAR
+by design — interaction lives in the engine. Monaco final-lap-pit artifact documented in the
+model card (`pit_strategy_simulation.md`).
+
+### `src/simulation/engine.py` — STATUS: ✅ DONE (Phase 4b, v3.2 — THE SHOWCASE)
+`simulate(RaceSpec, n_rollouts, seed, device) -> SimResult` (win/podium/mean-finish + per-rollout
+finish matrix). Samples: per-lap σ from RECALIBRATED band (default_sigma reads
+tft_calibration.json + tft_recalibration.csv), tyre CI z per (rollout,driver,stint), pit
+N(loss, 0.8s), overtaking Bernoulli by circuit class. Deterministic strategy schedules
+precomputed per driver (`_stint_schedule`). `recommend()` ranks candidate ego strategies with
+common random numbers. Does NOT call the TFT net per lap (distributional summaries — document
+why). `src/simulation/validate_sim.py` = replay protocol (leave-one-race-out driver pace,
+grid proxy = lap-1 cumulative order); writes reports/simulation/validation.{csv,_summary.md}.
+Tests: `tests/test_simulation.py` (9: MDP rule/monotonicity/replay-consistency; engine
+ordering/probability-sum/seed/overtake-freeze/extra-stop-cost).
 
 ### NEW — `src/models/pit_strategy/rl_agent.py` — STATUS: STRETCH (Phase 5, only after all else works)
 PPO/DQN trained inside the simulation engine (wrapped as a Gymnasium env). Compared head-to-head with the MDP. If it doesn't beat the MDP, that's a documented finding, not a failure.
@@ -330,29 +371,63 @@ v3 PHASES (no fixed weeks — quality first, sprint pace):
                 (numbers moved ≤0.03s — contract fix, not results change); mlflow 3.x guards
                 everywhere; four-model comparison table; validate.py double-validation removed;
                 test_tft collection fix; portfolio README written.
-  [ ] Phase 3.5 — TFT quantile recalibration (conformal, era-aware). LOCAL CPU.  <-- CURRENT
-  [ ] Phase 4 — Pit MDP + Monte Carlo simulation engine (THE SHOWCASE). Validate sim vs history.
-  [ ] Phase 5 — STRETCH: RL pit agent in the simulator, vs MDP. Only if Phases 0-4 are solid.
-  [ ] Phase 6 — FastAPI + Streamlit dashboard + HTML showcase page.
-  [ ] Phase 7 — Deploy (light host), technical report, final cross-era evaluation.
+  [x] Phase 3.5 — TFT conformal recalibration DONE (v3.2, local CPU on the v1 ckpt).
+                Green-flag, era-aware, calib/eval never share laps. Era0: shift 0.082s,
+                coverage 0.747->0.800 (= nominal). Era1 (calib on 2026 R1, eval R2-6):
+                shift 0.868s, 0.659->0.879 (conservative — safe direction).
+                models/tft_calibration.json + reports/lap_time/tft_recalibration.csv.
+                NOTE: SC laps in calibration blow the shift to ~8s — green-only is correct
+                (the sim samples green pace). pf+lightning now ALSO in the local venv (CPU).
+  [x] v3.2 features — EngineMaker (season-aware team→PU dict, domain knowledge, ENGINE_ORDER
+                fixed a priori) + DriverEncoded (frozen from train, rookies → -1). Ablation:
+                val green 2.16->2.14 but test green 2.11->2.22 (drivers switch teams across
+                the boundary; rookies unseen). Selection stays val-based; both rows in the
+                model card. EngineEncoded SHAP ≈0 in-era (era-0 engine ⊂ team) — its real
+                test is TFT v2. SHAP shift: TeamEncoded 0.43->0.08, DriverEncoded 0.32
+                (driver nested in team — attribution not identifiable, good interview point).
+  [x] Phase 4a — Pit MDP DONE (v3.2): exact backward induction over (lap × compound ×
+                age × two-compound-rule), pit at end of lap, OUT_LAP_AGE=2. Inputs: tyre
+                curves + measured pit loss + fuel delta. Bahrain/Spain 2-stop, Monaco/Japan
+                1-stop (matches reality). Known artifact: Monaco pits on the FINAL lap to
+                satisfy the rule — optimal in a deterministic rival-free world, absurd under
+                SC risk; kept as the cleanest argument for the sim layer. Policy heatmaps +
+                optimal_strategies.csv + mdp_vs_actual.csv in reports/pit_strategy/.
+  [x] Phase 4b — Monte Carlo engine DONE (v3.2): torch [rollouts × drivers], samples
+                per-lap σ from RECALIBRATED TFT band, tyre CI z-draw per (rollout,driver,
+                stint), pit N(loss,0.8s), circuit-class overtaking (street .08/med .20/
+                power .30, strike gap 1.5s, hold 0.6s). recommend() = paired common-random-
+                number comparison. MDP-optimal Bahrain 2-stop wins the sim table (0.772 win
+                prob) — layers agree. VALIDATION (validate_sim.py, leave-one-race-out pace):
+                4 races 2025, 52 drivers, central-80% coverage 0.79 (Japan 1.00, Hungary
+                0.78, Monaco 1.00, Bahrain 0.53 — SC-affected; no SC model in v1, documented).
+                pit_loss.py: 2,153 green pit events, per-circuit medians 19.6-29.7s.
+  [ ] Kaggle next — notebooks/05_tft_v2_kaggle.ipynb: TFT v2 (Driver+EngineMaker static
+                cats) + recalibration in one session (~2-4h). Bars: green 1.12 val / 1.62
+                test. After download: evaluate.py, pytest, update card + Section 8.
+  [ ] Phase 5 — STRETCH: RL pit agent in the simulator, vs MDP. Only if dashboard not more
+                valuable; Section 10.5. (~10 Kaggle GPU hrs)
+  [ ] Phase 6 — FastAPI + Streamlit dashboard + HTML showcase page. Section 10.6.
+  [ ] Phase 7 — Deploy (light host), technical report, final cross-era evaluation. Section 10.7.
 ```
 
 ---
 
 ## 9. Current blockers / next actions
 
-**Phase 3 — DONE** (see tracker). The four-model table now lives in
-`reports/lap_time/model_comparison.csv`; tyre curves + `predict_degradation()` are ready for the sim.
+**Phases 0–4 DONE and validated** (see tracker). 71 tests passing locally.
 
-**NEXT: Phase 3.5 — TFT quantile recalibration (local CPU, no GPU needed).** The TFT's intervals are
-overconfident (central coverage 0.756 val / 0.690 test vs 0.80 nominal) — the sim must not sample from
-raw bands. Full playbook in Section 10.2. After that: Phase 4 (Section 10.3-10.4).
+**NEXT (user action): run `notebooks/05_tft_v2_kaggle.ipynb` on Kaggle (GPU T4, ~2–4h).**
+It trains TFT v2 (Driver + EngineMaker static categoricals), evaluates, recalibrates, and zips
+artifacts. Bars: v1 green 1.12 val / 1.62 test. Either outcome is reportable. After download:
+unzip into repo root → `python -m src.models.lap_time.evaluate` → `pytest -q` → update model
+card + Section 8.
 
-**Kaggle budget: ~28 GPU hours remain.** Allocation plan in Section 10.0 — do NOT spend them ad hoc.
+**Then choose: Phase 6 (dashboard — recommended next, biggest portfolio visual) or Phase 5
+(RL stretch, ~10 Kaggle GPU hrs).** Playbooks: Sections 10.5 / 10.6.
 
-**Watch:** TFT win rests on autoregressive in-stint history — keep that framing in the writeup (it is the
-thesis, not leakage). 2026 test = 6 races, noisy. Kaggle: T4 not P100 (Error 15). Model binaries are
-gitignored — `tft_lap.pt`/`tft_lap.ckpt` must be downloaded from Kaggle run outputs when retrained.
+**Watch:** TFT win rests on autoregressive in-stint history (thesis, not leakage). 2026 test =
+6 races, noisy. Kaggle: T4 not P100 (Error 15). Model binaries gitignored — download from Kaggle
+output. Recalibration must stay GREEN-ONLY (Error 20). Read TUTOR.md before any interview.
 
 ---
 
@@ -381,7 +456,8 @@ download model artifacts from the run output (models/ is gitignored).
 
 ### 10.1 ✅ Phases 1–3 — done, see Section 8
 
-### 10.2 Phase 3.5 — TFT quantile recalibration (LOCAL CPU, ~half a day)
+### 10.2 ✅ Phase 3.5 — DONE in v3.2 (kept as reference; recalibrate.py implements this,
+### with one amendment: GREEN-FLAG LAPS ONLY for both calibration and evaluation — Error 20)
 **Why:** measured coverage 0.756 (val) / 0.690 (test) vs 0.80 nominal. The sim samples lap
 times from these bands; overconfident bands → overconfident strategy probabilities → the
 headline feature is wrong. Conformal scaling fixes this with zero retraining.
@@ -415,7 +491,9 @@ headline feature is wrong. Conformal scaling fixes this with zero retraining.
 **Pitfalls:** never calibrate on test laps you'll also report coverage on; keep predict=False;
 the .pt artifact stores hparams — don't hardcode hidden_size.
 
-### 10.3 Phase 4a — Pit-strategy MDP (LOCAL CPU, ~1–2 days)
+### 10.3 ✅ Phase 4a — DONE in v3.2 (spec below kept as reference; one deliberate deviation:
+### the MDP is single-car — undercut/interaction modeling moved wholly into the engine,
+### which is the cleaner separation. See pit_strategy_simulation.md.)
 **File: `src/models/pit_strategy/mdp.py`** (exists, empty). Interpretable baseline BEFORE the sim.
 **State:** `(lap, tyre_age, compound, position, gap_ahead_s, laps_remaining)` — discretize:
 tyre_age 1–40, gap_ahead bucketed [0–1s, 1–3s, 3–10s, >10s]. Era is fixed per race (input).
@@ -436,7 +514,8 @@ action) per circuit/compound — a killer dashboard visual; comparison vs greedy
 the actual historical strategies of 3 races (did the MDP recommend what winners did?). Tests:
 transition determinism, value iteration convergence, undercut sign-flip case. Model card.
 
-### 10.4 Phase 4b — Monte Carlo race-simulation engine (THE SHOWCASE; LOCAL CPU dev, optional Kaggle for sweeps)
+### 10.4 ✅ Phase 4b — DONE in v3.2 (spec kept as reference; implemented + validated, 0.79
+### replay coverage. Remaining optional: Kaggle GPU sweep, SC-hazard v2 with separate ablation.)
 **File: `src/simulation/engine.py`** (+ `src/simulation/__init__.py`, tests).
 **Contract (define before coding):**
 ```python
@@ -626,6 +705,12 @@ Read before writing any code. (Carried from v2 — all still valid.)
 18. **test_tft.py broke the whole pytest collection locally** — module-level import of `lightning` (absent from local venv; TFT deps live on Kaggle) made `pytest tests` ERROR during collection, killing all other tests. Fix: `pytest.importorskip("lightning")`/`("pytorch_forecasting")` at the top of test_tft.py. Also removed `stop_randomization=True` from a test (dropped in pf 1.7.0 — would have failed on the pinned Kaggle env too, Error 14). FIXED in v3.1.
 
 19. **Stale v2 tyre fit.py reintroduced Error #10** — the pre-v3.1 `src/models/tyre/fit.py` ("Week 5" header) globbed `*.parquet` (double-counting via `_full` aggregates), fit raw deltas with no fuel correction, no green-flag filter, no pooling, and ignored the stint's starting age (biased b). Fully rewritten in Phase 3 (Section 5). Lesson: when a phase ships, grep for older drafts of its files. FIXED in v3.1.
+
+20. **Conformal calibration on all laps produced a useless 8.4s shift** — 2026 R1 (the era-1 calibration slice) is SC-heavy; SC laps put +20-40s errors in the nonconformity tail, so the 80th-percentile shift exploded (band width 20.7s, era-1 "coverage" 0.91 by absurd width). Fix: calibrate AND evaluate on green-flag laps only — that is the distribution the sim engine samples from. After fix: era0 shift 0.082s (coverage 0.800 = nominal), era1 0.868s (0.879). Rule: every quantile-band consumer in this project is green-scoped. FIXED in v3.2.
+
+21. **GPU-trained ckpt crashes on CPU load: "Torch not compiled with CUDA enabled"** — the Lightning checkpoint pickles torchmetrics objects (loss, logging_metrics) whose `_device` attribute is cuda; any `.to()` then tries to create a cuda tensor. `map_location="cpu"` does NOT fix attributes. Fix: pass fresh CPU objects as `load_from_checkpoint` kwargs (`loss=QuantileLoss(quantiles=...)`, `logging_metrics=torch.nn.ModuleList()`); fallback monkeypatch pins `torchmetrics.Metric.device` to cpu. FIXED in v3.2 (recalibrate.py).
+
+22. **Driver/engine feature ablation (not a bug — a finding to not "fix")** — DriverEncoded improves val green (2.16→2.14) but degrades test green (2.11→2.22): drivers switch teams across the 2026 boundary and rookies are unseen. Do NOT remove the features to chase the test number (that is test-set selection); the model card documents both rows and the mechanism. EngineEncoded ≈0 SHAP in-era is EXPECTED (era-0 engine is constant within team) — judge it on the TFT v2 run. RECORDED in v3.2.
 
 ---
 

@@ -4,7 +4,7 @@
 
 Most F1 ML projects stop at "I trained a model on a table." This project composes uncertainty-aware models into a simulation engine that outputs **probability distributions over strategies, not point estimates** — which is what real motorsport strategy teams actually do.
 
-> **Status:** lap-time models (baseline ladder + TFT) and tyre degradation curves complete and honestly evaluated. Monte Carlo simulation engine + strategy MDP in progress. See [roadmap](#roadmap).
+> **Status:** lap-time models (ladder + TFT, conformally recalibrated), tyre degradation curves, pit-strategy MDP, and the Monte Carlo simulation engine are complete and validated against historical races. Next: RL stretch + dashboard. See [roadmap](#roadmap).
 
 ---
 
@@ -14,9 +14,9 @@ Most F1 ML projects stop at "I trained a model on a table." This project compose
 
 | Model | Val all / green (2025, era 0) | Test all / green (2026, era 1) |
 |---|---|---|
-| BayesianRidge (one-hot + scaled) | 4.16 / 2.97 | 3.97 / 2.88 |
-| RandomForest (integer codes) | 6.45 / 5.61 | 9.05 / 8.52 |
-| LightGBM (Optuna-tuned baseline) | 3.51 / 2.16 | 3.42 / 2.11 |
+| BayesianRidge (one-hot + scaled) | 4.35 / 3.13 | 4.19 / 3.09 |
+| RandomForest (integer codes) | 6.47 / 5.63 | 8.87 / 8.30 |
+| LightGBM (Optuna-tuned baseline) | 3.49 / 2.14 | 3.53 / 2.22 |
 | **Temporal Fusion Transformer** | **2.25 / 1.12** | **3.78 / 1.62** |
 
 Three results worth reading closely:
@@ -25,7 +25,9 @@ Three results worth reading closely:
 2. **Cross-regulation generalization.** 2026 introduced new aero/power-unit regulations and three new teams (test set = unseen era, 6 races). LightGBM holds 2.16 → 2.11 green MAE across the boundary; the TFT holds 1.12 → 1.62. Era is an explicit feature, encodings are frozen from train, and the degradation across the boundary is reported, not hidden.
 3. **RandomForest is kept as a documented failure case.** It collapses across the era boundary (5.61 → 8.52) because it can't handle integer-coded categoricals or unseen teams — the motivating contrast for LightGBM's native categorical handling. Honest baselines beat quiet deletions.
 
-**Uncertainty is a first-class output.** The TFT predicts 0.1/0.5/0.9 quantiles; calibration is *measured*, not assumed: central coverage is 0.76 in-era (vs 0.80 nominal — mildly overconfident) and 0.69 across the 2026 boundary (overconfident; flagged for recalibration before the simulation engine trusts the bands).
+**Uncertainty is a first-class output — and it's recalibrated.** The TFT predicts 0.1/0.5/0.9 quantiles; measured coverage was 0.75 in-era / 0.66 across the 2026 boundary vs 0.80 nominal (overconfident). Era-aware **split-conformal recalibration** (calibrated on held-out rounds, never the laps it's scored on) fixes it: era-0 coverage lands at **0.800 exactly**; era-1 at 0.879 (conservatively wide from a one-race calibration set — the safe direction). The simulation engine samples from the *recalibrated* bands.
+
+**Strategy layer (Phase 4):** an exact backward-induction **MDP** (lap × tyre-age × compound × two-compound-rule) proposes strategies; the **Monte Carlo engine** (vectorized torch rollouts of the full field with tyre/pace/pit-loss uncertainty + a circuit-class overtaking model) ranks them as win-probability distributions. They agree independently — the MDP's optimal Bahrain 2-stop also wins the sim's recommendation table. **Validated by historical replay**: across 4 contrasting 2025 races, 79% of drivers' actual finishing positions fall inside their central-80% simulated band (target 80%; the miss is SC-affected Bahrain — the v1 engine has no safety-car model, documented).
 
 **Tyre degradation (Phase 3):** quadratic curves `b·age + c·age²` fit per (compound × circuit × era) on fuel-corrected, green-flag-only stint deltas, with 95% CIs from the covariance and hierarchical pooling for thin cells (2026 cells pool to era level — wide CIs in low-data regimes, never false precision). Era-0 degradation rates land in physically sensible territory: HARD 0.024 / MEDIUM 0.033 s/lap linear terms, SOFT carrying the largest cliff coefficient.
 
@@ -50,12 +52,13 @@ FastF1 (2022–2026 race laps, cached)
                  hierarchical pooling, 95% CIs
         │
         ▼
-   Monte Carlo simulation engine  ◄── THE SHOWCASE (in progress)
-   composes lap-time + tyre + pit-loss models WITH uncertainty
-   N ≥ 1000 rollouts → strategy win-probability distributions
+   Pit-strategy MDP (proposes) ──► Monte Carlo engine (disposes)  ◄── THE SHOWCASE
+   composes lap-time + tyre + pit-loss models WITH (recalibrated) uncertainty
+   N ≥ 1000 vectorized rollouts → strategy win-probability distributions
+   validated by historical replay (79% coverage vs 80% target)
         │
         ▼
-   Pit-strategy MDP (+ RL stretch) → FastAPI → Streamlit dashboard
+   (RL stretch) → FastAPI → Streamlit dashboard
 ```
 
 ## Evaluation discipline
@@ -70,13 +73,15 @@ FastF1 (2022–2026 race laps, cached)
 ## Repo map
 
 ```
-src/pipeline/        ingest, validate, features, splits  (column contracts = law)
-src/models/lap_time/ train.py (ladder), train_tft.py, evaluate.py
-src/models/tyre/     fit.py (degradation curves + pooling)
-src/models/model_cards/  honest model cards with real numbers
-reports/             per-circuit / per-era / calibration CSVs + plots
-tests/               50 unit tests (pipeline, features, tyre, TFT structure)
-notebooks/           EDA + Kaggle GPU training notebooks
+src/pipeline/             ingest, validate, features, splits  (column contracts = law)
+src/models/lap_time/      train.py (ladder), train_tft.py, evaluate.py, recalibrate.py
+src/models/tyre/          fit.py (degradation curves + pooling)
+src/models/pit_strategy/  pit_loss.py (measured), mdp.py (exact backward induction)
+src/simulation/           engine.py (Monte Carlo showcase), validate_sim.py (replay)
+src/models/model_cards/   honest model cards with real numbers
+reports/                  per-circuit / per-era / calibration / validation CSVs + plots
+tests/                    71 unit tests
+notebooks/                EDA + Kaggle GPU training notebooks (04 = TFT v1, 05 = v2)
 ```
 
 ## Reproduce
@@ -88,8 +93,12 @@ pip install fastf1 pandas pandera scikit-learn scipy mlflow shap matplotlib \
 python -m src.pipeline.ingest                    # fetch FastF1 data (cached)
 python -m src.models.lap_time.train              # ladder + Optuna → MLflow
 python -m src.models.lap_time.evaluate           # all report CSVs/plots
+python -m src.models.lap_time.recalibrate        # conformal shifts (needs tft_lap.ckpt)
 python -m src.models.tyre.fit                    # degradation curves
-pytest -q                                        # 50 tests
+python -m src.models.pit_strategy.pit_loss       # measured pit-loss table
+python -m src.models.pit_strategy.mdp            # optimal strategies + heatmaps
+python -m src.simulation.validate_sim            # historical replay validation
+pytest -q                                        # 71 tests
 ```
 
 The TFT trains on GPU (`notebooks/04_tft_kaggle_fullrun.ipynb`, Kaggle T4 — pinned `pytorch-forecasting==1.7.0` / `lightning==2.6.5` / torch cu128; P100 unsupported by the cu128 wheel).
@@ -101,11 +110,12 @@ No live telemetry (tyre temps, fuel flow, ERS, active-aero state — the last es
 ## Roadmap
 
 - [x] Data pipeline + validation + leakage-proof splits (2022–2026)
-- [x] Baseline ladder: Ridge → RF → LightGBM (Optuna), SHAP, model card
+- [x] Baseline ladder: Ridge → RF → LightGBM (Optuna), SHAP, ablations, model card
 - [x] TFT with quantile uncertainty, cross-era eval, calibration measurement
 - [x] Tyre degradation curves with CIs + hierarchical pooling
-- [ ] TFT quantile recalibration (conformal, era-aware)
-- [ ] Pit-strategy MDP (value iteration, explicit undercut model)
-- [ ] **Monte Carlo race-simulation engine** — validated by replaying historical races
-- [ ] RL pit agent vs MDP (stretch)
+- [x] TFT quantile recalibration (era-aware split conformal — era-0 coverage 0.800 on the nose)
+- [x] Pit-strategy MDP (exact backward induction, two-compound rule, policy heatmaps)
+- [x] **Monte Carlo race-simulation engine** — 79% historical-replay coverage vs 80% target
+- [ ] TFT v2 on Kaggle (driver + engine-maker static categoricals) — `notebooks/05_tft_v2_kaggle.ipynb`
+- [ ] RL pit agent vs MDP in the simulator (stretch)
 - [ ] FastAPI + Streamlit dashboard + deployment

@@ -104,9 +104,12 @@ def load_eval_data() -> pd.DataFrame:
     meta["TrackStatus"] = meta["TrackStatus"].astype(str)
 
     # Encode with the mappings frozen at train time — never rebuild from eval data.
-    circuit_map, team_map = load_encoding_mappings()
+    circuit_map, team_map, driver_map = load_encoding_mappings()
     feats = build_features(
-        validate_laps(raw), circuit_mapping=circuit_map, team_mapping=team_map
+        validate_laps(raw),
+        circuit_mapping=circuit_map,
+        team_mapping=team_map,
+        driver_mapping=driver_map,
     )
     merged = feats.merge(meta, on=LAP_KEYS, how="left")
 

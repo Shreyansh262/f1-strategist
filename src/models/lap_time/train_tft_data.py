@@ -83,12 +83,15 @@ def load_tft_data() -> pd.DataFrame:
     # in this frame are consistent with the tree models' inputs.
     try:
         from src.pipeline.features import load_encoding_mappings
-        circuit_map, team_map = load_encoding_mappings()
+        circuit_map, team_map, driver_map = load_encoding_mappings()
     except FileNotFoundError:
         log.warning("Frozen mappings not found — building in-memory (TFT unaffected)")
-        circuit_map, team_map = None, None
+        circuit_map, team_map, driver_map = None, None, None
     features = build_features(
-        with_stints, circuit_mapping=circuit_map, team_mapping=team_map
+        with_stints,
+        circuit_mapping=circuit_map,
+        team_mapping=team_map,
+        driver_mapping=driver_map,
     )
     log.info("After build_features: %d rows, %d cols", len(features), features.shape[1])
 

@@ -1,0 +1,13 @@
+circuit,era,n_laps,base_lap_s,pit_loss_s,start_compound,n_stops,stops,total_time_s,feasible
+Bahrain Grand Prix,0,57,98.08,24.81,SOFT,2,"[(13, 'HARD'), (35, 'HARD')]",5695.9,True
+Bahrain Grand Prix,0,57,98.08,24.81,MEDIUM,2,"[(17, 'HARD'), (37, 'HARD')]",5691.8,True
+Bahrain Grand Prix,0,57,98.08,24.81,HARD,2,"[(20, 'MEDIUM'), (37, 'HARD')]",5691.8,True
+Spanish Grand Prix,0,66,81.21,23.29,SOFT,2,"[(18, 'HARD'), (42, 'HARD')]",5468.9,True
+Spanish Grand Prix,0,66,81.21,23.29,MEDIUM,2,"[(20, 'HARD'), (43, 'HARD')]",5468.8,True
+Spanish Grand Prix,0,66,81.21,23.29,HARD,2,"[(23, 'MEDIUM'), (43, 'HARD')]",5468.8,True
+Monaco Grand Prix,0,78,79.4,20.34,SOFT,1,"[(1, 'MEDIUM')]",6109.1,True
+Monaco Grand Prix,0,78,79.4,20.34,MEDIUM,1,"[(78, 'SOFT')]",6107.2,True
+Monaco Grand Prix,0,78,79.4,20.34,HARD,1,"[(1, 'MEDIUM')]",6108.9,True
+Japanese Grand Prix,1,53,95.37,23.95,SOFT,1,"[(14, 'HARD')]",5072.7,True
+Japanese Grand Prix,1,53,95.37,23.95,MEDIUM,1,"[(14, 'HARD')]",5074.6,True
+Japanese Grand Prix,1,53,95.37,23.95,HARD,1,"[(39, 'SOFT')]",5072.7,True

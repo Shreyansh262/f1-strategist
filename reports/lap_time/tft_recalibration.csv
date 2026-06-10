@@ -1,0 +1,5 @@
+era,calibrated_on,bands,shift_s,central_coverage,n_laps,mean_band_width_s
+0,2025 odd rounds,raw,0.0,0.7468,12978,2.9594
+0,2025 odd rounds,recalibrated,0.0824,0.7999,12978,3.1243
+1,2026 round 1 only,raw,0.0,0.6594,5205,2.6467
+1,2026 round 1 only,recalibrated,0.8677,0.879,5205,4.3821

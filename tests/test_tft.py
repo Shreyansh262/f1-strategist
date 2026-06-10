@@ -29,7 +29,7 @@ def _synthetic(n_groups=20, lap_len=15) -> pd.DataFrame:
                 "Season": season, "RoundNumber": 1, "Driver": f"D{g%4}",
                 "StintID": 1, "LapNumber": lap, "Compound": "MEDIUM",
                 "Era": int(season >= 2026), "CircuitKey": "Monaco",
-                "Team": f"T{g%3}", "TyreLife": lap,
+                "Team": f"T{g%3}", "EngineMaker": f"E{g%2}", "TyreLife": lap,
                 "NormLapNumber": lap / lap_len, "FuelLoad": 110 - lap * 1.5,
                 "TrackTemp": 40.0, "AirTemp": 25.0, "TrackStatus": "1",
                 "LapTimeSeconds": 80 + 0.05 * lap + rng.normal(0, 0.2),
