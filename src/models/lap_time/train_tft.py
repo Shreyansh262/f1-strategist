@@ -138,25 +138,35 @@ def green_mae(model: TemporalFusionTransformer,
               raw_df: pd.DataFrame) -> dict[str, float]:
     """MAE overall + green-flag only (TrackStatus=='1'). Section 13 rule 4.
 
-    pf 1.7.0: model.predict(dl, return_index=True) returns a pd.DataFrame where
-    columns are GroupID, time_idx (from return_index) + prediction columns.
-    The median quantile (index 1 of 3 for [0.1,0.5,0.9]) is the point estimate.
+    Uses mode="prediction" (point forecast = 0.5 quantile for QuantileLoss) so we
+    never depend on quantile-column naming, which shifted across pf versions. With
+    return_index=True, pf returns either a namedtuple (.output tensor + .index df)
+    or — in some builds — a plain df; both are handled defensively.
+    yhat is aligned to the index POSITIONALLY (predict preserves row order), then
+    merged to raw_df on (GroupID, time_idx) for the actual target + TrackStatus.
     """
-    pred_df: pd.DataFrame = model.predict(
-        dataloader,
-        return_index=True,
-        return_decoder_lengths=False,
-        mode="quantiles",          # returns all quantiles as columns
-    )
-    # pred_df columns: group_ids + time_idx + [0, 1, 2] (quantile indices)
-    # column 1 = median (0.5 quantile)
-    pred_df = pred_df.rename(columns={1: "yhat"})
-    pred_df["yhat"] = pred_df["yhat"].astype(float)
+    preds = model.predict(dataloader, mode="prediction", return_index=True)
 
-    # merge back actual target + TrackStatus
+    # --- extract point predictions + their index, regardless of return shape ----
+    if hasattr(preds, "output") and hasattr(preds, "index"):
+        out_t, idx = preds.output, preds.index.copy()
+        yhat = (out_t.cpu().numpy() if hasattr(out_t, "cpu") else np.asarray(out_t)).ravel()
+    elif isinstance(preds, pd.DataFrame):
+        idx = preds.copy()
+        pred_cols = [c for c in idx.columns if c not in GROUP_IDS + ["time_idx"]]
+        yhat = idx[pred_cols[0]].to_numpy().ravel()  # single point col (max_pred_len=1)
+    else:  # bare tensor/array — no index; cannot align to TrackStatus
+        raise RuntimeError(f"Unexpected predict() return type: {type(preds)}")
+
+    if len(yhat) != len(idx):
+        raise RuntimeError(f"pred/index length mismatch: {len(yhat)} vs {len(idx)}")
+    idx = idx.reset_index(drop=True)
+    idx["yhat"] = yhat.astype(float)
+
+    # --- merge actual target + TrackStatus on lap identity ----------------------
     key_cols = GROUP_IDS + ["time_idx"]
     need_cols = key_cols + [TARGET] + (["TrackStatus"] if "TrackStatus" in raw_df.columns else [])
-    j = pred_df.merge(raw_df[need_cols], on=key_cols, how="inner")
+    j = idx[key_cols + ["yhat"]].merge(raw_df[need_cols], on=key_cols, how="inner")
 
     err = (j["yhat"] - j[TARGET]).abs()
     out: dict[str, float] = {"mae_all": float(err.mean())}
