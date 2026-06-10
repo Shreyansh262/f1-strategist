@@ -24,7 +24,7 @@ import mlflow
 import lightning.pytorch as pl
 from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
 from pytorch_forecasting import TimeSeriesDataSet, TemporalFusionTransformer
-from pytorch_forecasting.data import NaNLabelEncoder, GroupNormalizer
+from pytorch_forecasting.data import NaNLabelEncoder, EncoderNormalizer
 from pytorch_forecasting.metrics import QuantileLoss
 
 # carry-back loader: raw glob -> validate -> add_stint_id -> build_features
@@ -110,7 +110,10 @@ def make_datasets(df: pd.DataFrame):
         static_categoricals=STATIC_CATEGORICALS,
         time_varying_known_reals=TIME_VARYING_KNOWN_REALS,
         time_varying_unknown_reals=TIME_VARYING_UNKNOWN_REALS + [TARGET],
-        target_normalizer=GroupNormalizer(groups=GROUP_IDS),
+        # Per-stint scaling from each series' own encoder window — generalizes to
+        # unseen stints (every val/test GroupID is new across seasons). GroupNormalizer
+        # keyed on the unique GroupID would KeyError on every val/test series.
+        target_normalizer=EncoderNormalizer(),
         categorical_encoders=cat_encoders,
         add_relative_time_idx=True,
         add_target_scales=True,
