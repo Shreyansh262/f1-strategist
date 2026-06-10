@@ -438,6 +438,42 @@ class TestAddStintId:
         assert result["StintID"].iloc[0] == result["StintID"].iloc[1]
         assert result["StintID"].iloc[2] > result["StintID"].iloc[1]
 
+class TestMappingFreeze:
+    """Mapping persistence contract: only freeze_encoding_mappings() writes JSON."""
+
+    def test_default_encoding_does_not_write_files(self, tmp_path, monkeypatch):
+        import src.pipeline.features as feat
+        monkeypatch.setattr(feat, "MAPPINGS_DIR", tmp_path)
+        df = make_minimal_df()
+        _ = feat.add_circuit_encoding(df)
+        _ = feat.add_team_encoding(df)
+        _ = feat.build_features(df)
+        assert list(tmp_path.iterdir()) == [], (
+            "mapping=None must never persist mappings — tests/notebooks would "
+            "clobber the production data/mappings/*.json artifacts"
+        )
+
+    def test_freeze_writes_both_mappings(self, tmp_path, monkeypatch):
+        import json
+        import src.pipeline.features as feat
+        monkeypatch.setattr(feat, "MAPPINGS_DIR", tmp_path)
+        df = make_minimal_df()
+        circuit_map, team_map = feat.freeze_encoding_mappings(df)
+        with open(tmp_path / "circuit_map.json") as f:
+            assert json.load(f) == circuit_map
+        with open(tmp_path / "team_map.json") as f:
+            assert json.load(f) == team_map
+        assert circuit_map == {"bahrain": 0}
+        assert team_map == {t: i for i, t in enumerate(sorted(df["Team"].unique()))}
+
+    def test_load_roundtrip(self, tmp_path, monkeypatch):
+        import src.pipeline.features as feat
+        monkeypatch.setattr(feat, "MAPPINGS_DIR", tmp_path)
+        df = make_minimal_df()
+        frozen = feat.freeze_encoding_mappings(df)
+        assert feat.load_encoding_mappings() == frozen
+
+
 def test_team_encoding_frozen_and_unseen():
     train = pd.DataFrame({"Team": ["Ferrari", "McLaren", "Red Bull"]})
     mapping = {t: i for i, t in enumerate(sorted(train["Team"].unique()))}

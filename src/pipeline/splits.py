@@ -3,10 +3,10 @@ src/pipeline/splits.py
 
 Season-aware temporal train / validation / test splits.
 
-Split design:
-    Train : 2022 + 2023  (model learns from two full seasons)
-    Val   : 2024          (hyperparameter tuning, early stopping, threshold selection)
-    Test  : 2025          (blind evaluation — touch this ONCE at final evaluation)
+Split design (v3):
+    Train : 2022-2024  (three full ground-effect-era seasons)
+    Val   : 2025       (hyperparameter tuning, early stopping, threshold selection)
+    Test  : 2026       (blind evaluation across the regulation boundary — touch ONCE)
 
 Why seasons, not random rows?
     F1 lap times are non-stationary across seasons: regulation changes (e.g. 2022
@@ -48,11 +48,11 @@ def make_splits(
     df : pd.DataFrame
         Features DataFrame from build_features(). Must contain a 'Season' column.
     train_seasons : list[int]
-        Seasons to include in the training set. Default: [2022, 2023].
+        Seasons to include in the training set. Default: [2022, 2023, 2024].
     val_seasons : list[int]
-        Seasons to include in the validation set. Default: [2024].
+        Seasons to include in the validation set. Default: [2025].
     test_seasons : list[int]
-        Seasons to include in the test set. Default: [2025].
+        Seasons to include in the test set. Default: [2026].
 
     Returns
     -------
@@ -128,4 +128,20 @@ def assert_no_leakage(
     assert val_s.isdisjoint(test_s),   \
         f"Season overlap between val and test: {val_s & test_s}"
 
-    logger.info("Leakage check passed: no season overlap between splits")
+    # Frozen-mapping check (Section 5): any encoded circuit/team code appearing in
+    # val/test but never in train must be the -1 sentinel — otherwise the mapping
+    # was built on more than the training split.
+    for col in ("CircuitEncoded", "TeamEncoded"):
+        if col not in train_df.columns:
+            continue
+        train_codes = set(train_df[col].unique())
+        for name, split in (("val", val_df), ("test", test_df)):
+            if col not in split.columns or len(split) == 0:
+                continue
+            novel = set(split[col].unique()) - train_codes
+            assert novel <= {-1}, (
+                f"{col} codes {novel} appear in {name} but not train — "
+                "mappings must be frozen from the training split (unseen → -1)"
+            )
+
+    logger.info("Leakage check passed: no season overlap, mappings frozen from train")

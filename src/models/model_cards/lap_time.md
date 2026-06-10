@@ -15,11 +15,13 @@ Predicts single-lap time (`LapTimeSeconds`) for an F1 race lap from circuit, tea
 | Model | Val all / green (2025, era0) | Test all / green (2026, era1) |
 |---|---|---|
 | BayesianRidge (one-hot + scaled) | 4.16 / 2.97 | 3.97 / 2.88 |
-| RandomForest (integer codes) | 6.42 / 5.57 | 9.01 / 8.46 |
-| LightGBM (Phase-1 baseline) | 3.52 / 2.18 | 3.45 / 2.14 |
-| **TFT (Phase-2, chosen)** | **2.27 / 1.11** | **3.93 / 1.67** |
+| RandomForest (integer codes) | 6.45 / 5.61 | 9.05 / 8.52 |
+| LightGBM (Phase-1 baseline) | 3.51 / 2.16 | 3.42 / 2.11 |
+| **TFT (Phase-2, chosen)** | **2.25 / 1.12** | **3.78 / 1.62** |
 
-Green-flag = `TrackStatus == "1"` (~92% of laps). Safety-car / yellow laps account for the bulk of the all-laps vs green gap. TFT roughly halves the LightGBM green MAE on both splits.
+*(Tree-model numbers are from the retrain with mappings frozen from the training split only — unseen 2026 teams (Audi, Cadillac, Racing Bulls) now hit the −1 sentinel path. Changes vs the pre-freeze run are within ±0.03 s, confirming the fix is a contract correction, not a results change.)*
+
+Green-flag = `TrackStatus == "1"` (~92% of laps). Safety-car / yellow laps account for the bulk of the all-laps vs green gap. TFT roughly halves the LightGBM green MAE on both splits (1.12 vs 2.16 val; 1.62 vs 2.11 test).
 
 ## Phase 2 — Temporal Fusion Transformer
 **Setup.** Sequence unit = laps within a stint (`GroupID = Season_Round_Driver_StintID`), `time_idx` = lap-in-stint. Static categoricals (`CircuitKey`, `Team`, `EraStr`, `CompoundStr`) via `NaNLabelEncoder(add_nan=True)`; known reals (`time_idx`, `NormLapNumber`, `FuelLoad`, `TyreLife`); observed reals (`TrackTemp`, `AirTemp`) + the target. Target scaled per-stint with `EncoderNormalizer`. QuantileLoss at 0.1/0.5/0.9. ~85.6K params, hidden_size 32. Trained on Kaggle T4 (~26 epochs, EarlyStopping on val_loss).
@@ -41,12 +43,12 @@ Green-flag = `TrackStatus == "1"` (~92% of laps). Safety-car / yellow laps accou
 - **Per-circuit spread is large** (`reports/lap_time/tft_breakdown.csv`): green MAE is excellent on conventional tracks (Japan 0.46, Hungary 0.56, China 0.73) but poor on street/atypical circuits — Canada (val 2.96 / test 3.13) and Monaco (val 2.83 / test 2.07) are the worst. Aggregate green MAE hides this; the sim should treat street-circuit predictions as higher-variance.
 
 ## Key findings
-- **Cross-regulation generalization (the headline).** LightGBM green-lap MAE is 2.18s on val (era 0) vs 2.14s on test (era 1) — essentially flat across the 2022-25 → 2026 regulation boundary. A model trained only on ground-effect-era data carries that learning into the unseen active-aero era. **Caveat:** the 2026 test set is only 6 races, so test ≈ val means "generalizes within noise," not "generalizes *better* than val." A larger 2026 sample is needed to tighten this.
-- **RandomForest is kept as an instructive counter-example, not a candidate.** It collapses across the boundary (green test 8.46s vs green val 5.57s) because sklearn trees can't split integer-coded categoricals natively and RF never saw era 1 / new 2026 teams in training. The contrast is the motivation for LightGBM's native-categorical + regularized approach.
-- **Team-pace fix validated.** `TeamEncoded` ranks 6th of 14 features by mean |SHAP| (0.43), above every tyre-age polynomial term, the compound×life interaction, and fuel effect — car pace is real, learnable signal. Circuit dominates everything (~7.26, ~17× team), as expected: track length sets the baseline lap time.
+- **Cross-regulation generalization (the headline).** LightGBM green-lap MAE is 2.16s on val (era 0) vs 2.11s on test (era 1) — essentially flat across the 2022-25 → 2026 regulation boundary. A model trained only on ground-effect-era data carries that learning into the unseen active-aero era. **Caveat:** the 2026 test set is only 6 races, so test ≈ val means "generalizes within noise," not "generalizes *better* than val." A larger 2026 sample is needed to tighten this.
+- **RandomForest is kept as an instructive counter-example, not a candidate.** It collapses across the boundary (green test 8.52s vs green val 5.61s) because sklearn trees can't split integer-coded categoricals natively and RF never saw era 1 / new 2026 teams in training. The contrast is the motivation for LightGBM's native-categorical + regularized approach.
+- **Team-pace fix validated.** `TeamEncoded` ranks 6th of 14 features by mean |SHAP| (0.43), above every tyre-age polynomial term, the compound×life interaction, and fuel effect — car pace is real, learnable signal. Circuit dominates everything (~7.63, ~18× team), as expected: track length sets the baseline lap time.
 
 ## Feature importance (LightGBM, mean |SHAP|, on val)
-CircuitEncoded 7.26 ≫ AirTemp 0.99, TrackTemp 0.62, CompoundEncoded 0.59, FuelLoad 0.58, TeamEncoded 0.43, CompoundXTyreLife 0.14, FuelEffect 0.13, NormLapNumber 0.12, TyreLife 0.11, TyreAgeSq 0.03, TyreAgeCubed 0.003, StintPhase ≈0, Era 0.00.
+CircuitEncoded 7.63 ≫ AirTemp 0.88, CompoundEncoded 0.61, FuelLoad 0.52, TrackTemp 0.47, TeamEncoded 0.43, NormLapNumber 0.19, TyreLife 0.13, CompoundXTyreLife 0.12, FuelEffect 0.10, TyreAgeSq 0.02, TyreAgeCubed ≈0, StintPhase ≈0, Era 0.00.
 Physical features rank sensibly (temps/compound/fuel above tyre-age polynomials) — the model learned structure, not noise. Era attributes 0.00 because val is single-era (no variance to attribute) — not a bug.
 
 ## Intended use / out of scope

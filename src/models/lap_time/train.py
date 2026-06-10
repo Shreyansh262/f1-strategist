@@ -17,9 +17,14 @@ MLflow UI:
 """
 
 import logging
+import os
 import time
 from pathlib import Path
 from typing import Final
+
+# mlflow 3.x blocks the local file:// store unless opted in (Errors log #13).
+# Must be set before any mlflow call; setdefault so a sqlite backend can override.
+os.environ.setdefault("MLFLOW_ALLOW_FILE_STORE", "true")
 
 import joblib
 import lightgbm as lgb
@@ -35,8 +40,12 @@ from sklearn.metrics import mean_absolute_error
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
-from src.pipeline.features import MODEL_FEATURE_COLUMNS, build_features
-from src.pipeline.splits import assert_no_leakage, make_splits
+from src.pipeline.features import (
+    MODEL_FEATURE_COLUMNS,
+    build_features,
+    freeze_encoding_mappings,
+)
+from src.pipeline.splits import TRAIN_SEASONS, assert_no_leakage, make_splits
 from src.pipeline.validate import validate_laps
 
 logging.basicConfig(
@@ -134,7 +143,16 @@ def load_data(parquet_glob: str = "data/raw/*.parquet") -> pd.DataFrame:
     logger.info("Raw data: %d rows from %d files", len(raw_df), len(parquet_files))
 
     validated_df = validate_laps(raw_df)
-    features_df  = build_features(validated_df)
+
+    # Freeze circuit/team mappings from the TRAIN seasons only (Section 5/6):
+    # unseen 2025/2026 circuits or teams (Audi, Cadillac, Racing Bulls) encode
+    # to the -1 sentinel — the same path a brand-new team takes at serving time.
+    circuit_map, team_map = freeze_encoding_mappings(
+        validated_df[validated_df["Season"].isin(TRAIN_SEASONS)]
+    )
+    features_df = build_features(
+        validated_df, circuit_mapping=circuit_map, team_mapping=team_map
+    )
     return features_df
 
 

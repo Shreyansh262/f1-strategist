@@ -1,6 +1,11 @@
-# F1 AI Race Strategist — Master Context v3
+# F1 AI Race Strategist — Master Context v3.1
 ### Paste this at the start of every new Claude conversation
-### v3 supersedes v2. Rewritten after gaining access to an A6000 48GB GPU. Scope = "depth, then one ambitious showcase."
+### v3 supersedes v2. Scope = "depth, then one ambitious showcase."
+### v3.1 (2026-06-10): Phase 3 (tyre curves) DELIVERED; mapping-freeze contract fixed + ladder
+### retrained; README written; Section 10 rewritten as step-by-step PHASE PLAYBOOKS detailed
+### enough for any model (or human) to execute without re-deriving design decisions.
+### GPU note: A6000 access ended up unused — Phase 2 ran on Kaggle T4. ~28 Kaggle GPU hours
+### remain; Section 10.0 says exactly what to spend them on.
 
 ---
 
@@ -10,16 +15,17 @@ When the user says **"update master context"**, do the following without asking 
 1. Read this entire file
 2. Update Section 8 (progress tracker) based on what was discussed
 3. Update Section 9 (next actions) to reflect the immediate next step
-4. Add any new bugs to Section 17 (errors log)
+4. Add any new bugs to Section 16 (errors log)
 5. Update Section 5 (file specs) with any fixes made
 6. Output the complete updated file — no truncation
 
 When the user says **"start phase N"**:
 1. Read Section 8 to confirm what's done
-2. Read Section 5 for all file specs before writing any code
-3. Read Section 3 before suggesting any pip install
-4. Read Section 17 before writing any code — do not reintroduce fixed bugs
-5. State the plan and data contracts before writing any code
+2. Read Section 10's playbook for phase N — it contains the design decisions; do not re-derive them
+3. Read Section 5 for all file specs before writing any code
+4. Read Section 3 before suggesting any pip install
+5. Read Section 16 (errors log) before writing any code — do not reintroduce fixed bugs
+6. State the plan and data contracts before writing any code
 
 **Guiding principle for this project (do not let it drift):** The binding constraint is DATA, not compute or time. F1 has only a few hundred thousand usable green-flag laps. A 48GB GPU does not justify a bigger model — it justifies the *right* model trained well, fast iteration, and the compute-hungry simulation showcase. Fewer things, done excellently and evaluated honestly, beats many shallow models. If a suggestion adds scope without adding rigor, push back.
 
@@ -126,26 +132,27 @@ gymnasium                # RL environment API
 
 Ground truth for every file. New code must match. Do not rename columns or change return types without updating this section.
 
-### KEEP AS-IS (GPU-agnostic, already solid — do not rewrite)
+### KEEP AS-IS (already solid — do not rewrite)
 - `src/pipeline/ingest.py` — **COMPLETE.** Output columns are law (Section 6). FastF1 cache enabled at module level. `session_type="R"` loads the Grand Prix, not the sprint.
-- `src/pipeline/validate.py` — **COMPLETE** (one fix pending, see below). Filter order: TyreLife==1 out-laps → LapTimeSeconds in [75,130] → invalid/"None" Compound → sprint safety-net (mean>105s) → Pandera `lazy=True`.
-- `tests/test_features.py` — **COMPLETE, 24 tests passing.**
+- `src/pipeline/validate.py` — **COMPLETE.** Filter order: TyreLife==1 out-laps → LapTimeSeconds in [70,130] → invalid/"None" Compound → sprint safety-net (mean>105s) → season whitelist → Pandera `lazy=True`. (v3.1: removed an accidental duplicate Pandera validation call.)
+- `tests/` — **COMPLETE: 50 tests passing locally** (test_features 44 incl. mapping-freeze contract, test_tyre 9, test_tft skips cleanly when lightning absent via `pytest.importorskip`).
 - `conftest.py` — **COMPLETE.**
 
-### CHANGE — `src/pipeline/validate.py`
-- **Monaco floor check:** Monaco race laps can dip toward ~74–75s; the `[75.0, 130.0]` band may clip legitimate laps. Verify against a real Monaco race file before trusting it; widen the lower bound (e.g. 70.0) if laps are being dropped. Log how many rows each filter removes.
-
-### CHANGE — `src/pipeline/features.py` — STATUS: NEEDS UPDATE
-Add to the existing functions:
+### `src/pipeline/features.py` — STATUS: COMPLETE (v3.1 mapping-freeze contract)
 ```python
-def add_circuit_encoding(df, mapping=None) -> pd.DataFrame   # frozen mapping, -1 for unseen (spec unchanged from v2)
-def add_team_encoding(df, mapping=None) -> pd.DataFrame       # NEW — frozen mapping, -1 for unseen team
-def add_era_feature(df) -> pd.DataFrame                       # 2022-2025=0, 2026+=1 (spec unchanged from v2)
-def add_stint_id(df) -> pd.DataFrame                          # per driver per race (spec unchanged from v2)
+def add_circuit_encoding(df, mapping=None) -> pd.DataFrame  # mapping=None builds IN-MEMORY only (no save)
+def add_team_encoding(df, mapping=None) -> pd.DataFrame     # same; unseen -> -1
+def freeze_encoding_mappings(train_df) -> (dict, dict)      # THE ONLY writer of data/mappings/*.json
+def load_encoding_mappings() -> (dict, dict)                # for eval/serving
+def add_era_feature(df) -> pd.DataFrame                     # 2022-2025=0, 2026+=1
+def add_stint_id(df) -> pd.DataFrame                        # per driver per race
 ```
-**`add_team_encoding`** mirrors `add_circuit_encoding` exactly: build sorted mapping from training set if `mapping is None`, save to `data/mappings/team_map.json`, map with `.fillna(-1).astype(int)`. Team comes from FastF1 (`Team` column on laps) — add it to `extract_laps()` passthrough if not already present.
+**Contract (v3.1, Errors #17):** `mapping=None` must NEVER persist to disk — tests/notebooks
+used to clobber the production mappings. Only `freeze_encoding_mappings(train_rows)` writes
+JSON, and it must be fed TRAIN seasons only so unseen 2026 teams (Audi, Cadillac, Racing
+Bulls) hit the −1 sentinel. `train.py` does this; `evaluate.py`/serving load the frozen maps.
 
-**Updated feature columns:**
+**Feature columns:**
 ```python
 MODEL_FEATURE_COLUMNS: list[str] = [
     "CircuitEncoded", "TeamEncoded", "CompoundEncoded", "Era",
@@ -156,19 +163,23 @@ MODEL_FEATURE_COLUMNS: list[str] = [
 ```
 For the **TFT**, features are split differently (static / known / observed) — see Section 11. `MODEL_FEATURE_COLUMNS` above is the flat list used by the linear/tree models.
 
-### CHANGE — `src/pipeline/splits.py` — STATUS: NEEDS UPDATE
+### `src/pipeline/splits.py` — STATUS: COMPLETE (v3.1)
 - Season-aware temporal splits only, never shuffle.
 - **v3 split:** train = 2022–2024, val = 2025, test = **2026 (6 GP races available as of June 2026: Australia, China, Japan, Miami, Canada, Monaco).** Re-ingest 2026 before every evaluation as more races run. Bahrain & Saudi 2026 were cancelled — they will never exist.
-- `assert_no_leakage()` must also check team mappings are frozen from train.
+- `assert_no_leakage()` checks season disjointness AND that any CircuitEncoded/TeamEncoded
+  code appearing in val/test but not train is exactly −1 (mapping-freeze proof).
 
-### CHANGE — `src/models/lap_time/train.py` — STATUS: NEEDS UPDATE (becomes the baseline-ladder trainer)
+### `src/models/lap_time/train.py` — STATUS: COMPLETE (baseline-ladder trainer, v3.1 retrained)
 Trains the **baseline ladder** and logs all to MLflow:
-1. `BayesianRidge` + `StandardScaler` — linear baseline. **NOTE:** label-encoded `CircuitEncoded`/`TeamEncoded` are meaningless to a linear model. For the linear baseline only, one-hot (or target-) encode circuit & team. Trees are fine with the integer codes.
-2. `RandomForest` — kept as a documented rung (already built).
-3. **`LightGBM` tuned with Optuna** — the real "model to beat." `n_jobs=-1`.
-- MLflow: `MLFLOW_TRACKING_URI = (PROJECT_ROOT / "mlruns").as_uri()` (`.as_uri()` required on Windows). Experiment `"lap_time_predictor"`.
-- Save: `models/bayesian_ridge_lap.joblib`, `models/rf_lap.joblib`, `models/lgbm_lap.joblib`, `models/scaler_lap.joblib`.
-- Does NOT import `ingest.py` — `load_data()` reads parquet directly.
+1. `BayesianRidge` pipeline (OneHot cats + scaled conts) — linear baseline.
+2. `RandomForest` — kept as the documented era-collapse rung.
+3. **`LightGBM` tuned with Optuna (60 trials)** — the model to beat.
+- `load_data()` freezes mappings from TRAIN seasons via `freeze_encoding_mappings` then
+  encodes the full frame with them (v3.1).
+- MLflow: `MLFLOW_TRACKING_URI = (PROJECT_ROOT / "mlruns").as_uri()`; experiment
+  `"lap_time_predictor"`; `MLFLOW_ALLOW_FILE_STORE=true` set at import (mlflow 3.x, Errors #13).
+- Saves: `models/{bayesian_ridge,rf,lgbm,chosen}_lap.joblib`.
+- Does NOT import `ingest.py` — `load_data()` reads per-round parquet directly (Errors #10).
 
 ### NEW — `src/models/lap_time/train_tft.py` — STATUS: BUILT + SMOKE-VALIDATED (Phase 2; full A6000 run pending)
 TFT trainer. Runs on the A6000. See Section 11 for architecture. Saves Lightning ckpt via
@@ -198,17 +209,37 @@ Re-exports `MLFLOW_TRACKING_URI` (so train_tft.py needn't import train.py) and s
 Colab/Kaggle smoke notebook: pins the triangle, clones + always `git pull`, runs `main(fast=True)`.
 Used to confirm the version triangle + data contract before committing the A6000 to a full run.
 
-### CHANGE — `src/models/lap_time/evaluate.py` — STATUS: NEEDS UPDATE
-Outputs to `reports/lap_time/`: `per_circuit_mae.csv`, `per_era_mae.csv` (NEW), `greenflag_vs_alllaps_mae.csv` (NEW — MAE on green-flag laps vs all laps, the SC-impact story), `calibration.png` (NEW — do the TFT quantiles cover actual values?), `learning_curve.png`, `shap_summary.png`, `model_comparison.csv` (Ridge vs RF vs LGBM vs TFT, per-era). Imports `MLFLOW_TRACKING_URI` from `train.py` — do not redefine.
+### `src/models/lap_time/evaluate.py` — STATUS: COMPLETE (v3.1)
+Outputs to `reports/lap_time/`: `per_circuit_mae.csv`, `per_era_mae.csv`, `greenflag_vs_alllaps_mae.csv`, `learning_curve.png`, `shap_summary.png` + `shap_importance.csv`, and `model_comparison.csv` — now the **four-model table**: tree rows computed live, TFT rows folded in from `tft_breakdown.csv` via `_tft_comparison_rows()` (skips silently if TFT not trained). Encodes eval data with `load_encoding_mappings()` — never rebuilds mappings. Imports `MLFLOW_TRACKING_URI` from `train.py`.
 
-### NEW — `src/models/tyre/fit.py` — STATUS: NOT STARTED (Phase 3)
-`scipy.optimize.curve_fit`, quadratic `a + b*age + c*age²`, per (compound × circuit × era), 95% CI from the covariance. **Hierarchical pooling required:** if a (compound × circuit × era) cell has too few stints (e.g. thin 2026 cells), back off to (compound × era), then (compound). Wide CIs in low-data regimes, never false precision. Uses `StintID`. Saves `models/tyre_curves.joblib`.
+### `src/models/tyre/fit.py` — STATUS: ✅ DONE (Phase 3, v3.1 — full rewrite of the stale v2 file)
+Model: fuel-corrected within-stint delta, `delta(age) = b·(age−age0) + c·(age²−age0²)` —
+the quadratic `a + b·age + c·age²` with the per-stint intercept differenced out against a
+baseline = median of the stint's first 3 green laps. **Fuel correction first** (subtract
+`FuelEffect`): fuel burn ~0.045 s/lap otherwise cancels real degradation and biases b low.
+**Green-flag slick laps only** (SC laps are +20–40s outliers; INT/WET excluded — drying track
+makes wet laps faster with age, wrong model). **Hierarchical pooling:** (compound×circuit×era)
+[≥5 stints] → (compound×era) [≥8] → (compound); chosen level recorded in `pool_level`.
+Loads via `load_tft_data()` (per-round glob + dedup + StintID/TrackStatus carry-back).
+`predict_degradation(curves, compound, circuit, era, age) -> (mid, lo, hi)` is the Phase 4
+sim's interface (has compound-level fallback for unknown cells; raises only on unknown compound).
+RESULTS: 84 cells (76 circuit-level, 8 era-pooled — all 2026); era-0 mean b: HARD 0.024 /
+MED 0.033 / SOFT 0.025 s/lap, SOFT largest cliff c≈0.0033; circuit-level mean r²=0.156 (honest:
+per-lap noise from traffic/management dominates — b,c CIs are what matter). Saves
+`models/tyre_curves.joblib`, `reports/tyre/tyre_curves.csv`, `degradation_curves_era{0,1}.png`;
+MLflow experiment `tyre_degradation`. Tests: `tests/test_tyre.py` (synthetic b,c recovery,
+pooling fallback, fuel-correction, predict band). Model card: `src/models/model_cards/tyre_degradation.md`.
 
-### NEW — `src/models/pit_strategy/mdp.py` — STATUS: NOT STARTED (Phase 4)
-Value iteration in NumPy. State, actions, reward in Section 11. **The transition/undercut model is the hard part and must be defined explicitly** (see Section 11) — do not hand-wave it. Compare vs greedy threshold + actual historical strategies.
+### NEW — `src/models/lap_time/recalibrate.py` — STATUS: NOT STARTED (Phase 3.5 — NEXT)
+Conformal recalibration of the TFT quantile bands. Full playbook: Section 10.2.
 
-### NEW — `src/simulation/engine.py` — STATUS: NOT STARTED (Phase 4 — THE SHOWCASE)
-Monte Carlo race-simulation engine. See Section 11. Vectorized with torch tensors so N=1000+ rollouts are fast on GPU (also runs on CPU for serving). Saves nothing (stateless) but its outputs feed the dashboard and API.
+### NEW — `src/models/pit_strategy/mdp.py` — STATUS: NOT STARTED (Phase 4a)
+Value iteration in NumPy. Full playbook with state/action/transition/undercut spec: Section 10.3.
+
+### NEW — `src/simulation/engine.py` — STATUS: NOT STARTED (Phase 4b — THE SHOWCASE)
+Monte Carlo race-simulation engine. Full playbook with dataclass contract, per-lap loop,
+overtaking model, and the historical-replay validation protocol: Section 10.4. Vectorized with
+torch tensors (CPU-first; GPU only for big sweeps). Stateless — outputs feed dashboard/API.
 
 ### NEW — `src/models/pit_strategy/rl_agent.py` — STATUS: STRETCH (Phase 5, only after all else works)
 PPO/DQN trained inside the simulation engine (wrapped as a Gymnasium env). Compared head-to-head with the MDP. If it doesn't beat the MDP, that's a documented finding, not a failure.
@@ -290,47 +321,181 @@ v3 PHASES (no fixed weeks — quality first, sprint pace):
                 the sim trusts the bands. Per-circuit: great on conventional tracks (Japan 0.46s green), poor
                 on street circuits (Canada ~3s, Monaco ~2-2.8s). Reports: tft_breakdown.csv + tft_calibration.csv.
                 Model card filled. Artifacts (models/*.pt,*.ckpt) now gitignored — download from Kaggle manually.
-  [ ] Phase 3 — Tyre degradation model: curve_fit + hierarchical pooling + CIs.   <-- CURRENT
+  [x] Phase 3 — Tyre degradation DONE (v3.1, 2026-06-10): full rewrite of stale v2 fit.py.
+                Fuel-corrected green-flag deltas, intercept-free quadratic, hierarchical pooling.
+                84 cells (76 circuit-level, 8 era-pooled = all thin 2026 cells). Era-0 b: HARD
+                0.024 / MED 0.033 / SOFT 0.025 s/lap; SOFT largest cliff. r²=0.156 circuit-mean
+                (per-lap noise — honest). Tests (9) + model card + MLflow + era plots done.
+  [x] v3.1 hardening (same session): mapping-freeze contract (Errors #17) + ladder retrain
+                (numbers moved ≤0.03s — contract fix, not results change); mlflow 3.x guards
+                everywhere; four-model comparison table; validate.py double-validation removed;
+                test_tft collection fix; portfolio README written.
+  [ ] Phase 3.5 — TFT quantile recalibration (conformal, era-aware). LOCAL CPU.  <-- CURRENT
   [ ] Phase 4 — Pit MDP + Monte Carlo simulation engine (THE SHOWCASE). Validate sim vs history.
   [ ] Phase 5 — STRETCH: RL pit agent in the simulator, vs MDP. Only if Phases 0-4 are solid.
   [ ] Phase 6 — FastAPI + Streamlit dashboard + HTML showcase page.
-  [ ] Phase 7 — Deploy (light host), README, technical report, final cross-era evaluation.
+  [ ] Phase 7 — Deploy (light host), technical report, final cross-era evaluation.
 ```
 
 ---
 
 ## 9. Current blockers / next actions
 
-**Phase 2 — DONE.** TFT beats LightGBM (val 1.11 / test 1.67 green); reports + model card + calibration
-filled; artifacts gitignored. Deferred (do when the sim needs it, not now): recalibrate the TFT quantiles
-for the 2026 era (conformal / era-aware widening) — currently overconfident across the boundary; and
-optionally concat `tft_breakdown.csv` into `evaluate.py`'s `model_comparison.csv` (columns
-split/scope/key/laps/mae_all/mae_green) for a single four-model table.
+**Phase 3 — DONE** (see tracker). The four-model table now lives in
+`reports/lap_time/model_comparison.csv`; tyre curves + `predict_degradation()` are ready for the sim.
 
-**Phase 3 — Tyre degradation (NEXT):** `src/models/tyre/fit.py` — `scipy.optimize.curve_fit`,
-quadratic `a + b·age + c·age²` per (compound × circuit × era), 95% CI from covariance, hierarchical
-pooling fallback for thin cells (esp. 2026). Uses `StintID`. Saves `models/tyre_curves.joblib`. See Sec 5/11.
+**NEXT: Phase 3.5 — TFT quantile recalibration (local CPU, no GPU needed).** The TFT's intervals are
+overconfident (central coverage 0.756 val / 0.690 test vs 0.80 nominal) — the sim must not sample from
+raw bands. Full playbook in Section 10.2. After that: Phase 4 (Section 10.3-10.4).
+
+**Kaggle budget: ~28 GPU hours remain.** Allocation plan in Section 10.0 — do NOT spend them ad hoc.
 
 **Watch:** TFT win rests on autoregressive in-stint history — keep that framing in the writeup (it is the
-thesis, not leakage). 2026 test = 6 races, noisy. Kaggle: T4 not P100 (Error 15).
+thesis, not leakage). 2026 test = 6 races, noisy. Kaggle: T4 not P100 (Error 15). Model binaries are
+gitignored — `tft_lap.pt`/`tft_lap.ckpt` must be downloaded from Kaggle run outputs when retrained.
 
 ---
 
-## 10. Phase plan (detailed)
+## 10. PHASE PLAYBOOKS — step-by-step, executable by any model
 
-**Phase 1 — Lap-time baseline ladder.** Fix the linear baseline encoding. Train Ridge → RF → LightGBM(Optuna). Log all to MLflow. Generate per-circuit, per-era, and green-flag-vs-all-laps MAE. Establish LightGBM as the number to beat. Restore the "candidate must beat baseline" safety check. Fill the lap-time model card with real numbers.
+Phases 0–3 are done (Section 8). What follows is prescriptive enough to execute without
+re-deriving design decisions. **Rules that apply to every playbook below:**
+- Read Sections 3 (packages), 6 (columns are law), 16 (errors log) BEFORE writing code.
+- Every trainer logs to MLflow; every model saves an artifact immediately; tests alongside code.
+- Local shell is PowerShell-hosted but Claude Code has a Bash tool; on Kaggle it's Linux bash.
+- Run `pytest -q` after every file change; all tests must pass before moving on.
+- When a phase finishes: update Section 8, Section 9, and the model card, then commit.
 
-**Phase 2 — TFT.** Build on the A6000 (Section 11). Sequence = laps within a stint. Train 2022–2024, val 2025, test 2026. Success = beats LightGBM on val AND generalizes across the 2026 era boundary (per-era MAE), with calibrated quantiles. Export a CPU-loadable artifact for serving. Honest comparison table is the deliverable even if TFT loses.
+### 10.0 Kaggle GPU budget (~28 hours) — spend it exactly like this
+| Item | Hours | Phase | Notes |
+|---|---|---|---|
+| TFT v2 (add Driver static categorical + 6-config mini-sweep) | ~6 | optional, after 3.5 | Only if Phase 4 is on track; success bar = beat val green 1.12 |
+| RL agent training runs (PPO in the sim env) | ~10 | 5 | The only genuinely GPU-hungry remaining item |
+| Large sim sweeps / sensitivity analysis (N=10k rollouts × strategies) | ~4 | 4 | Engine must run CPU-first; GPU is a speedup, not a dependency |
+| Buffer for re-runs / mistakes | ~8 | — | Kaggle sessions die; checkpoints every epoch |
+**Everything else (recalibration, MDP, sim engine dev, API, dashboard) is LOCAL CPU work.**
+Kaggle rules: GPU **T4** only (P100 = sm_60, unsupported by cu128 torch — Error 15); pin
+`pytorch-forecasting==1.7.0 lightning==2.6.5`; keep Kaggle's GPU-matched torch (don't reinstall
+torch); clone repo + `git pull` in cell 1 (pattern in `notebooks/04_tft_kaggle_fullrun.ipynb`);
+download model artifacts from the run output (models/ is gitignored).
 
-**Phase 3 — Tyre degradation.** curve_fit per (compound × circuit × era) with hierarchical pooling fallback and 95% CIs. Diagnostic: plot predicted vs actual degradation for 3–4 circuits. Fill tyre model card.
+### 10.1 ✅ Phases 1–3 — done, see Section 8
 
-**Phase 4 — MDP + Simulation engine (the showcase).** MDP first (interpretable baseline). Then the Monte Carlo engine that composes lap-time + tyre + pit-loss models with uncertainty. **Validate the sim by replaying historical races** — does the simulated finishing-order distribution cover the actual result? Output: strategy win-probability distributions. Fill pit-strategy model card.
+### 10.2 Phase 3.5 — TFT quantile recalibration (LOCAL CPU, ~half a day)
+**Why:** measured coverage 0.756 (val) / 0.690 (test) vs 0.80 nominal. The sim samples lap
+times from these bands; overconfident bands → overconfident strategy probabilities → the
+headline feature is wrong. Conformal scaling fixes this with zero retraining.
 
-**Phase 5 — RL stretch.** Wrap the simulator as a Gymnasium env, train PPO/DQN, compare to MDP. Document honestly. Skip cleanly if time/quality isn't there.
+**File: `src/models/lap_time/recalibrate.py`** (new). Steps:
+1. Load the CPU artifact `models/tft_lap.pt` (state_dict + hparams saved by `export_cpu`) —
+   rebuild via `TemporalFusionTransformer.load_from_checkpoint` is NOT possible from .pt;
+   instead reconstruct datasets with `make_datasets(load_tft_data())` and
+   `TemporalFusionTransformer.from_dataset(training, **saved_hparams)` then `load_state_dict`.
+   (If pf/lightning aren't in the local venv, run this step in the Kaggle CPU notebook or
+   install the pinned triangle locally — CPU wheels are fine, no CUDA needed.)
+2. Predict quantiles on the **val** set (predict=False — Error 16). Reuse
+   `quantile_coverage()` from train_tft.py.
+3. **Split-conformal scaling:** for each val lap compute the nonconformity score
+   `s_i = max(q0.1_i − y_i, y_i − q0.9_i)` (positive = outside band). Take the
+   (1−α)-quantile ŝ with α=0.20 → widen both band edges by ŝ:
+   `q0.1' = q0.1 − ŝ, q0.9' = q0.9 + ŝ`. This guarantees ≥0.80 marginal coverage on
+   exchangeable data.
+4. **Era-aware widening for 2026:** val is era-0 only, so conformal on val does NOT cover the
+   era shift. Compute a second, more conservative scale: multiply ŝ by the ratio of test/val
+   raw miscoverage (0.31/0.244 ≈ 1.27) and SAY SO in the writeup — or, better, hold out the
+   FIRST 2026 race (Australia R1) as a calibration slice for era-1 and conformalize on it,
+   evaluating coverage on R2–R6 only. The second option is more defensible; implement it,
+   and document that R1 is sacrificed from the test set for calibration.
+5. Save `models/tft_calibration.json`: `{"era0_shift_s": ..., "era1_shift_s": ...,
+   "quantiles": [0.1, 0.5, 0.9], "method": "split_conformal", "calibrated_on": ...}`.
+6. Re-measure coverage with shifted bands → append rows (`split`, `recalibrated=True`) to
+   `reports/lap_time/tft_calibration.csv`. Success = central coverage in [0.78, 0.85] on both.
+7. Update model card calibration section + Section 8. Tests: synthetic check that the
+   conformal shift achieves nominal coverage on a held-out synthetic sample.
+**Pitfalls:** never calibrate on test laps you'll also report coverage on; keep predict=False;
+the .pt artifact stores hparams — don't hardcode hidden_size.
 
-**Phase 6 — API + Dashboard.** FastAPI endpoints (Section 12). Streamlit 3-page app. HTML artifact as static showcase landing page. Optional Claude API for natural-language analyst commentary.
+### 10.3 Phase 4a — Pit-strategy MDP (LOCAL CPU, ~1–2 days)
+**File: `src/models/pit_strategy/mdp.py`** (exists, empty). Interpretable baseline BEFORE the sim.
+**State:** `(lap, tyre_age, compound, position, gap_ahead_s, laps_remaining)` — discretize:
+tyre_age 1–40, gap_ahead bucketed [0–1s, 1–3s, 3–10s, >10s]. Era is fixed per race (input).
+**Actions:** `{stay_out, pit_soft, pit_medium, pit_hard}` (compound choice matters — not just pit/no-pit).
+**Transition (write this function FIRST, as `transition(state, action) -> (next_state, reward)`):**
+- stay_out: tyre_age+1; lap time = circuit baseline (from LightGBM/median of green laps at that
+  circuit) + `predict_degradation(curves, compound, circuit, era, age)` mid value; gap updates
+  vs a rival assumed on the *historical median* strategy for that circuit.
+- pit_X: lap time += pit loss (per-circuit table — build `data/pit_loss.json` from FastF1:
+  median (pit-in + pit-out lap delta vs driver's green median) per circuit; fallback 22s);
+  tyre_age=1, compound=X.
+- **Undercut model:** when pitting, position vs the car ahead is recomputed by projecting both
+  cars 3 laps forward (fresh-tyre delta from the tyre curves vs their old-tyre delta) — if the
+  projected cumulative gap flips sign, positions swap. This is explicit, not hand-waved.
+**Reward:** −(total race time); terminal bonus for each position gained. Value iteration over
+the discretized grid in NumPy (<1s). **Deliverables:** optimal policy heatmap (lap × tyre_age →
+action) per circuit/compound — a killer dashboard visual; comparison vs greedy threshold AND vs
+the actual historical strategies of 3 races (did the MDP recommend what winners did?). Tests:
+transition determinism, value iteration convergence, undercut sign-flip case. Model card.
 
-**Phase 7 — Deploy + write-up.** Solve the deployment data/model bundling problem (Section 12). Public live demo (lower priority). README with architecture diagram, honest results tables, dashboard screenshots, "what I'd do differently." 3–5 page technical report PDF for applications. Final cross-era evaluation on all 2026 races available by then.
+### 10.4 Phase 4b — Monte Carlo race-simulation engine (THE SHOWCASE; LOCAL CPU dev, optional Kaggle for sweeps)
+**File: `src/simulation/engine.py`** (+ `src/simulation/__init__.py`, tests).
+**Contract (define before coding):**
+```python
+@dataclass
+class RaceSpec:    # circuit, era, n_laps, drivers: list[DriverSpec], pit_loss_s
+@dataclass
+class DriverSpec:  # driver, team, grid_pos, strategy: list[(pit_lap, compound)]
+def simulate(spec: RaceSpec, n_rollouts: int = 1000, seed: int | None = None,
+             device: str = "cpu") -> SimResult
+# SimResult: finish_position_counts [driver × position], win_prob, podium_prob,
+#            mean_race_time, per-lap position traces (for the dashboard replay)
+```
+**Per-lap loop, vectorized across rollouts (torch tensors, shape [n_rollouts, n_drivers]):**
+1. Base lap time per driver = TFT median prediction context-free fallback: circuit+team green
+   median from train data (simple, defensible), THEN + tyre delta sampled from
+   `predict_degradation` treating (hi−lo)/2 as ~1.96σ Gaussian, THEN + fuel-corrected offset,
+   THEN + per-lap noise σ from the (recalibrated!) TFT band width for that circuit.
+   (v1 of the engine does NOT need to call the TFT net per lap — sampling from its
+   *distributional summaries* per (circuit, era) is the right cost/benefit. Document this.)
+2. Pit stops per strategy: add pit loss, reset tyre age/compound.
+3. Track position by cumulative time; overtaking friction: a car within 1s of the car ahead
+   only passes with probability p_overtake (circuit-dependent: low Monaco ~0.05/lap, high
+   Spa ~0.35/lap — start with a 3-value table {street: .08, medium: .2, power: .3}, refine later).
+4. Optional v2: SC hazard per lap (Poisson, rate from historical SC frequency per circuit) —
+   include only after v1 validates; it changes everything and must be ablated separately.
+**Validation (the credibility step, non-negotiable):** replay ≥3 historical races (e.g.
+Bahrain 2024, Monaco 2025, Suzuka 2025) with the ACTUAL strategies → check the actual finishing
+order sits inside the simulated distribution (report per-driver percentile of actual finish;
+calibration histogram across drivers/races). Write `reports/simulation/validation.md` with
+these numbers — honest, even where it misses.
+**Strategy recommendation API:** `recommend(spec, candidate_strategies) -> ranked table with
+win/podium/points probabilities + uncertainty`. The MDP supplies candidate strategies; the sim
+ranks them. This composition (MDP proposes, sim disposes) is the line for the writeup.
+**Then:** GPU sweep on Kaggle (~4h budget): N=10k rollouts × all 1/2-stop strategies × 6
+2026 races → `reports/simulation/strategy_tables/`.
+
+### 10.5 Phase 5 — RL pit agent (STRETCH; Kaggle ~10h)
+Only start if 3.5 + 4a + 4b are merged and validated. `pip install stable-baselines3 gymnasium`
+(Section 3 ordering). Wrap the engine as a Gymnasium env (single ego driver, others on fixed
+strategies; obs = MDP state vector + recent lap deltas; action = MDP action set; reward =
+−race_time/1000 + position bonus at terminal). PPO, 2–5M steps, 3 seeds; checkpoint every 500k.
+Compare to the MDP policy in the SAME sim (paired rollouts, same seeds). **A documented "RL
+matched but didn't beat the MDP" is a legitimate result** — write it up either way.
+
+### 10.6 Phase 6 — API + dashboard (LOCAL CPU, ~2–3 days)
+FastAPI (`src/api/main.py`): endpoints exactly as Section 12; pydantic request/response models;
+all models loaded once at startup from `models/` (joblib + tyre curves + calibration json; TFT
+optional behind a feature flag since serving may lack pf). Streamlit (`dashboard/app.py` +
+`pages/`): Pre-Race / Live-Replay / Post-Race as Section 12; replay mode reads historical
+parquet — NO live-timing dependency. Visual bar: dark theme, F1-style red/white accents, the
+MDP policy heatmap, sim win-probability distributions as horizontal stacked bars, tyre curves
+with CI ribbons. Screenshot everything for the README.
+
+### 10.7 Phase 7 — Deploy + write-up (~2 days)
+Bundle: small curated data subset + CPU artifacts into the image (models/ and data/ are
+gitignored — this is the known gap, solve it HERE). HF Spaces preferred over Render (RAM).
+Re-ingest all 2026 races run by then; final cross-era eval; update every number in README +
+model cards. 3–5 page technical report PDF: problem → architecture → honest results →
+limitations → what-I'd-do-differently. Record a 2-min demo video/GIF of the dashboard.
 
 ---
 
@@ -455,6 +620,12 @@ Read before writing any code. (Carried from v2 — all still valid.)
 15. **Kaggle P100 + cu128 torch = `CUDA error: no kernel image`** — Kaggle's stock torch (2.10+cu128) is built for sm_70+ only; the P100 is sm_60, so it has no kernels at all. Fix: select **GPU T4** (sm_75, in the build), not P100. cell 1 of `notebooks/04_tft_kaggle_fullrun.ipynb` asserts the GPU arch to fail fast. RESOLVED in Phase 2.
 
 16. **TFT eval scored only the last lap per stint** — `from_dataset(..., predict=True)` keeps one window per series (the most-degraded last lap), so green MAE looked ~3-4s and lost to LightGBM. It also made `val_loss` (hence EarlyStopping/checkpoint) track that hard subset, halting training early at a worse model. Fix: `predict=False` for val/test → one prediction per decodable lap = fair per-lap comparison. After the fix TFT beats LightGBM (val 1.11 / test 1.67 green). One change fixed both the metric and the training. RESOLVED in Phase 2.
+
+17. **Production mappings clobbered + built from full data** — `add_circuit_encoding/add_team_encoding(mapping=None)` wrote `data/mappings/*.json` on EVERY call, so any test/notebook run on a tiny frame overwrote the production mappings (found on disk: `{"bahrain": 0}` and a 5-team map). Additionally `train.load_data()` built mappings on ALL seasons, so 2026-only teams (Audi, Cadillac, Racing Bulls) got real codes instead of −1 — predictively equivalent (codes unseen in train behave like −1) but violates the frozen-from-train contract and would corrupt serving. Fix (v3.1): `mapping=None` never persists; `freeze_encoding_mappings(train_rows)` is the only JSON writer (called by train.py on TRAIN seasons); `evaluate.py`/serving use `load_encoding_mappings()`; `assert_no_leakage` now asserts val/test-only codes are exactly −1. Ladder retrained post-fix: all MAEs moved ≤0.03s. FIXED in v3.1.
+
+18. **test_tft.py broke the whole pytest collection locally** — module-level import of `lightning` (absent from local venv; TFT deps live on Kaggle) made `pytest tests` ERROR during collection, killing all other tests. Fix: `pytest.importorskip("lightning")`/`("pytorch_forecasting")` at the top of test_tft.py. Also removed `stop_randomization=True` from a test (dropped in pf 1.7.0 — would have failed on the pinned Kaggle env too, Error 14). FIXED in v3.1.
+
+19. **Stale v2 tyre fit.py reintroduced Error #10** — the pre-v3.1 `src/models/tyre/fit.py` ("Week 5" header) globbed `*.parquet` (double-counting via `_full` aggregates), fit raw deltas with no fuel correction, no green-flag filter, no pooling, and ignored the stint's starting age (biased b). Fully rewritten in Phase 3 (Section 5). Lesson: when a phase ships, grep for older drafts of its files. FIXED in v3.1.
 
 ---
 

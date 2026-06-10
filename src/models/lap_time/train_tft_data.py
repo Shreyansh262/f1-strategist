@@ -78,7 +78,18 @@ def load_tft_data() -> pd.DataFrame:
             carry[col] = None
             log.warning("Column %s missing from raw data — filling with None", col)
 
-    features = build_features(with_stints)
+    # TFT consumes raw string categoricals (CircuitKey/Team), not the int codes —
+    # but encode with the train-frozen mappings when available so the int columns
+    # in this frame are consistent with the tree models' inputs.
+    try:
+        from src.pipeline.features import load_encoding_mappings
+        circuit_map, team_map = load_encoding_mappings()
+    except FileNotFoundError:
+        log.warning("Frozen mappings not found — building in-memory (TFT unaffected)")
+        circuit_map, team_map = None, None
+    features = build_features(
+        with_stints, circuit_mapping=circuit_map, team_mapping=team_map
+    )
     log.info("After build_features: %d rows, %d cols", len(features), features.shape[1])
 
     merged = features.merge(carry, on=LAP_KEYS, how="left")

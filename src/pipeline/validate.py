@@ -163,8 +163,6 @@ def validate_laps(df: pd.DataFrame) -> pd.DataFrame:
         logger.warning("Dropping %d laps from unsupported seasons (e.g. 2021)", n_season)
     df = df[df["Season"].isin(SUPPORTED_SEASONS)].copy()
     # --- pandera validation -------------------------------------------------
-    validated = LAPS_SCHEMA.validate(df, lazy=True)
-    # --- pandera validation -------------------------------------------------
     validated = LAPS_SCHEMA.validate(df, lazy=True)   # lazy=True collects all errors at once
     logger.info("Validation passed: %d laps retained from %d raw", len(validated), n_raw)
     return validated

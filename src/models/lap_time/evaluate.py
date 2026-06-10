@@ -16,7 +16,11 @@ Run after train.py has completed:
 """
 
 import logging
+import os
 from pathlib import Path
+
+# mlflow 3.x blocks the local file:// store unless opted in (Errors log #13).
+os.environ.setdefault("MLFLOW_ALLOW_FILE_STORE", "true")
 
 import joblib
 import matplotlib.pyplot as plt
@@ -27,7 +31,11 @@ import shap
 from sklearn.metrics import mean_absolute_error
 from sklearn.model_selection import learning_curve
 
-from src.pipeline.features import MODEL_FEATURE_COLUMNS, build_features
+from src.pipeline.features import (
+    MODEL_FEATURE_COLUMNS,
+    build_features,
+    load_encoding_mappings,
+)
 from src.pipeline.splits import make_splits
 from src.pipeline.validate import validate_laps
 from src.models.lap_time.train import (
@@ -95,7 +103,11 @@ def load_eval_data() -> pd.DataFrame:
     meta = raw[LAP_KEYS + ["TrackStatus"]].copy()
     meta["TrackStatus"] = meta["TrackStatus"].astype(str)
 
-    feats = build_features(validate_laps(raw))
+    # Encode with the mappings frozen at train time — never rebuild from eval data.
+    circuit_map, team_map = load_encoding_mappings()
+    feats = build_features(
+        validate_laps(raw), circuit_mapping=circuit_map, team_mapping=team_map
+    )
     merged = feats.merge(meta, on=LAP_KEYS, how="left")
 
     n_missing = merged["TrackStatus"].isna().sum()
@@ -129,6 +141,36 @@ def run_breakdowns(models: dict, splits: dict) -> dict:
     return out
 
 
+def _tft_comparison_rows() -> list[dict]:
+    """Fold the TFT's overall metrics (written by train_tft.py on the GPU box)
+    into the comparison table, so model_comparison.csv is the single four-model
+    source of truth. Silently skipped if the TFT hasn't been trained yet."""
+    tft_path = REPORTS_DIR / "tft_breakdown.csv"
+    if not tft_path.exists():
+        logger.info("tft_breakdown.csv not found — comparison table is trees-only")
+        return []
+    tft = pd.read_csv(tft_path)
+    rows = []
+    for split, grp in tft.groupby("split"):
+        overall = grp[grp["scope"] == "overall"]
+        eras    = grp[grp["scope"] == "era"].set_index("key")
+        eras.index = eras.index.astype(str)   # csv may parse era keys as ints
+        if overall.empty:
+            continue
+        o = overall.iloc[0]
+        rows.append({
+            "model":        "TFT",
+            "split":        split,
+            "all_laps_mae": round(float(o["mae_all"]), 4),
+            "green_mae":    round(float(o["mae_green"]), 4),
+            "n_all":        int(o["laps"]),
+            "n_green":      pd.NA,   # train_tft reports green MAE, not green lap count
+            "era0_mae":     round(float(eras.loc["0", "mae_all"]), 4) if "0" in eras.index else float("nan"),
+            "era1_mae":     round(float(eras.loc["1", "mae_all"]), 4) if "1" in eras.index else float("nan"),
+        })
+    return rows
+
+
 def write_model_comparison(bd: dict) -> pd.DataFrame:
     rows = []
     for (model, split), b in bd.items():
@@ -142,6 +184,7 @@ def write_model_comparison(bd: dict) -> pd.DataFrame:
             "era0_mae":     round(b["per_era"].get(0, float("nan")), 4),
             "era1_mae":     round(b["per_era"].get(1, float("nan")), 4),
         })
+    rows.extend(_tft_comparison_rows())
     df = pd.DataFrame(rows).sort_values(["split", "all_laps_mae"]).reset_index(drop=True)
     df.to_csv(REPORTS_DIR / "model_comparison.csv", index=False)
     logger.info("model_comparison.csv\n%s", df.to_string(index=False))

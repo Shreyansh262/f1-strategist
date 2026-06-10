@@ -8,6 +8,11 @@ import numpy as np
 import pandas as pd
 import pytest
 
+# TFT deps live on the GPU box (Kaggle/A6000), not the local venv — skip cleanly
+# instead of breaking the whole pytest collection when lightning/pf are absent.
+pytest.importorskip("lightning")
+pytest.importorskip("pytorch_forecasting")
+
 from src.models.lap_time.train_tft import (
     prepare, make_datasets, STATIC_CATEGORICALS,
     TIME_VARYING_KNOWN_REALS, TARGET, MAX_ENCODER_LENGTH,
@@ -77,6 +82,7 @@ def test_unseen_category_handled(df):
     novel = prepare(_synthetic(n_groups=4))
     novel["CircuitKey"] = "NeverSeenTrack"
     from pytorch_forecasting import TimeSeriesDataSet
-    ds = TimeSeriesDataSet.from_dataset(training, novel, predict=False, stop_randomization=True)
+    # NOTE: stop_randomization kwarg was dropped in pf 1.7.0 (Errors log #14)
+    ds = TimeSeriesDataSet.from_dataset(training, novel, predict=False)
     dl = ds.to_dataloader(train=False, batch_size=4, num_workers=0)
     next(iter(dl))  # no raise

@@ -1,45 +1,65 @@
 """
 src/models/tyre/fit.py
 
-Tyre degradation model — Week 5.
+Tyre degradation model — Phase 3 (v3 spec, Section 5/11).
 
-Approach: scipy.optimize.curve_fit per (compound × circuit × era).
-Model:    lap_time_delta = b * tyre_age + c * tyre_age²
-          (degradation relative to a fresh tyre baseline)
+Model
+-----
+Fuel-corrected lap-time delta within a stint, relative to the stint's first
+observed tyre age (age0):
 
-Outputs per (compound, circuit, era):
-    - coefficients (b, c)
-    - 95% confidence interval on each coefficient
-    - r² goodness of fit
-    - n_stints used for fitting
+    delta(age) = b·(age − age0) + c·(age² − age0²)
 
-Key design decisions:
-    - Physics-informed: tyre degradation is genuinely polynomial
-    - Interpretable: b=linear degradation rate, c=cliff acceleration
-    - Low-data aware: wide CIs when n_stints < 5 — no false precision
-    - Era-aware: separate curves for 2022-2025 vs 2026+
+which is the quadratic degradation curve  f(age) = a + b·age + c·age²  with the
+per-stint intercept `a` eliminated by differencing against the stint baseline.
+Subtracting the estimated FuelEffect first matters: fuel burn makes cars ~0.045
+s/lap FASTER over a stint, which cancels real degradation and biases b low.
+
+Hierarchical pooling (Section 5)
+--------------------------------
+Thin cells (esp. 2026) back off:
+    (compound × circuit × era)  →  (compound × era)  →  (compound)
+The chosen level is recorded per cell in `pool_level`. Wide CIs in low-data
+regimes are reported honestly — never false precision.
+
+Scope
+-----
+Slick compounds only (SOFT/MEDIUM/HARD). INTERMEDIATE/WET running is dominated
+by track-condition evolution (a drying track makes laps FASTER with age), so a
+monotone degradation curve is the wrong model — documented out of scope.
+Green-flag laps only (TrackStatus == "1"): SC/VSC laps are +20-40s outliers that
+destroy the fit.
+
+Outputs
+-------
+models/tyre_curves.joblib       — curves DataFrame (the sim engine's input)
+reports/tyre/tyre_curves.csv    — same, for inspection
+reports/tyre/degradation_curves_era{0,1}.png — fitted vs actual diagnostics
+MLflow run "tyre_curves" under experiment "tyre_degradation".
 
 Entry point:
     python -m src.models.tyre.fit
-
-Saves: models/tyre_curves.joblib
 """
 
 import logging
+import os
 from pathlib import Path
 from typing import Final
+
+# mlflow 3.x blocks the local file:// store unless opted in (Errors log #13).
+os.environ.setdefault("MLFLOW_ALLOW_FILE_STORE", "true")
 
 import joblib
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import mlflow
 import numpy as np
 import pandas as pd
 from scipy.optimize import curve_fit
 from scipy.stats import t as t_dist
 
-from src.pipeline.features import add_stint_id, build_features
-from src.pipeline.validate import validate_laps
+from src.models.lap_time.train_tft_data import load_tft_data, MLFLOW_TRACKING_URI
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(
@@ -54,179 +74,211 @@ REPORTS_DIR  = PROJECT_ROOT / "reports" / "tyre"
 MODELS_DIR.mkdir(parents=True, exist_ok=True)
 REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 
-# Minimum stints required to fit a curve reliably
-MIN_STINTS_FOR_FIT: Final[int] = 3
-# Minimum laps per stint to include it
-MIN_LAPS_PER_STINT: Final[int] = 4
-# Confidence level for CIs
-CI_LEVEL: Final[float] = 0.95
+EXPERIMENT_NAME: Final[str] = "tyre_degradation"
+
+SLICK_COMPOUNDS: Final[list[str]] = ["SOFT", "MEDIUM", "HARD"]
+
+# Pooling thresholds: minimum stints to trust a fit at each level
+MIN_STINTS_CIRCUIT: Final[int] = 5    # (compound × circuit × era)
+MIN_STINTS_POOLED:  Final[int] = 8    # (compound × era) and (compound)
+MIN_LAPS_PER_STINT: Final[int] = 5    # need enough points for curvature
+MAX_ABS_DELTA:      Final[float] = 8.0  # s — outlier guard (traffic, mistakes)
+CI_LEVEL:           Final[float] = 0.95
+
+STINT_KEYS: Final[list[str]] = ["Season", "RoundNumber", "Driver", "StintID"]
 
 
 # ---------------------------------------------------------------------------
 # Degradation model
 # ---------------------------------------------------------------------------
 
-def degradation_model(tyre_age: np.ndarray, b: float, c: float) -> np.ndarray:
+def degradation_model(x: np.ndarray, b: float, c: float) -> np.ndarray:
+    """delta(age) = b·(age − age0) + c·(age² − age0²).
+
+    x is a (2, n) array: row 0 = tyre age, row 1 = the stint's first observed
+    age (age0). Differencing against age0 removes the per-stint intercept.
     """
-    Tyre degradation relative to fresh tyre (tyre_age=1).
-    delta_lap_time = b * tyre_age + c * tyre_age²
+    age, age0 = x[0], x[1]
+    return b * (age - age0) + c * (age ** 2 - age0 ** 2)
 
-    b > 0: linear degradation rate (seconds per lap)
-    c > 0: quadratic acceleration (cliff effect on worn tyres)
+
+def degradation_delta(b: float, c: float, age: np.ndarray | float,
+                      age_from: float = 1.0) -> np.ndarray | float:
+    """Predicted lap-time loss (s) at `age` relative to `age_from` (fresh=1)."""
+    return b * (np.asarray(age) - age_from) + c * (np.asarray(age) ** 2 - age_from ** 2)
+
+
+# ---------------------------------------------------------------------------
+# Stint preparation
+# ---------------------------------------------------------------------------
+
+def prepare_stint_laps(df: pd.DataFrame) -> pd.DataFrame:
+    """Green-flag slick laps with fuel-corrected per-stint deltas.
+
+    Adds columns: FuelCorrected, Age0 (stint's first observed TyreLife),
+    Delta (fuel-corrected delta vs the stint baseline lap).
+    Keeps only stints with >= MIN_LAPS_PER_STINT green laps.
     """
-    return b * tyre_age + c * tyre_age ** 2
+    d = df.copy()
+    d = d[d["Compound"].isin(SLICK_COMPOUNDS)]
+    d = d[d["TrackStatus"].astype(str) == "1"]
+
+    # Remove the estimated fuel effect so the remaining trend is tyre, not fuel.
+    d["FuelCorrected"] = d["LapTimeSeconds"] - d["FuelEffect"]
+
+    d = d.sort_values(STINT_KEYS + ["LapNumber"])
+    grp = d.groupby(STINT_KEYS)
+    d["Age0"] = grp["TyreLife"].transform("min")
+    # Baseline = median of the stint's first 3 green laps — a single-lap baseline
+    # injects that lap's noise (~0.3s) into every delta of the stint as an offset.
+    d["Baseline"] = grp["FuelCorrected"].transform(lambda s: s.head(3).median())
+    d["Delta"] = d["FuelCorrected"] - d["Baseline"]
+
+    # Keep usable stints, drop outlier deltas (traffic / off-track moments)
+    stint_len = grp["TyreLife"].transform("size")
+    d = d[(stint_len >= MIN_LAPS_PER_STINT) & (d["Delta"].abs() <= MAX_ABS_DELTA)]
+    return d
 
 
-def fit_degradation_curve(
-    stint_df: pd.DataFrame,
-) -> dict | None:
+# ---------------------------------------------------------------------------
+# Single-cell fit
+# ---------------------------------------------------------------------------
+
+def fit_cell(cell_df: pd.DataFrame) -> dict | None:
+    """Fit the degradation curve to one pool of prepared stint laps.
+
+    Returns dict(b, c, b_ci, c_ci, r2, n_stints, n_laps) or None on failure.
     """
-    Fit degradation curve for a single (compound, circuit, era) group.
-
-    Parameters
-    ----------
-    stint_df : pd.DataFrame
-        Laps from continuous stints for one (compound, circuit, era).
-        Must contain TyreLife and LapTimeSeconds.
-
-    Returns
-    -------
-    dict with keys: b, c, b_ci, c_ci, r2, n_stints, n_laps
-    Returns None if insufficient data or fit fails.
-    """
-    # Use only stints with enough laps
-    valid_stints = (
-        stint_df.groupby(["Season", "RoundNumber", "Driver", "StintID"])
-        .filter(lambda g: len(g) >= MIN_LAPS_PER_STINT)
-    )
-
-    n_stints = valid_stints.groupby(
-        ["Season", "RoundNumber", "Driver", "StintID"]
-    ).ngroups
-
-    if n_stints < MIN_STINTS_FOR_FIT:
-        logger.debug(
-            "Insufficient stints (%d < %d) — skipping", n_stints, MIN_STINTS_FOR_FIT
-        )
+    n_stints = cell_df.groupby(STINT_KEYS).ngroups
+    if n_stints == 0 or len(cell_df) < MIN_LAPS_PER_STINT:
         return None
 
-    # Normalise: subtract per-stint baseline (lap time at tyre_age=1 or earliest lap)
-    rows = []
-    for _, stint in valid_stints.groupby(
-        ["Season", "RoundNumber", "Driver", "StintID"]
-    ):
-        stint = stint.sort_values("TyreLife")
-        baseline = stint["LapTimeSeconds"].iloc[0]
-        for _, row in stint.iterrows():
-            rows.append({
-                "TyreAge": row["TyreLife"],
-                "Delta":   row["LapTimeSeconds"] - baseline,
-            })
-
-    fit_df = pd.DataFrame(rows)
-    x = fit_df["TyreAge"].values.astype(float)
-    y = fit_df["Delta"].values.astype(float)
+    x = np.vstack([
+        cell_df["TyreLife"].to_numpy(dtype=float),
+        cell_df["Age0"].to_numpy(dtype=float),
+    ])
+    y = cell_df["Delta"].to_numpy(dtype=float)
 
     try:
         popt, pcov = curve_fit(
             degradation_model, x, y,
-            p0=[0.05, 0.001],             # sensible starting point
-            bounds=([-1.0, -0.1], [2.0, 0.5]),
-            maxfev=5000,
+            p0=[0.05, 0.001],
+            bounds=([-0.5, -0.05], [2.0, 0.5]),
+            maxfev=10000,
         )
     except (RuntimeError, ValueError) as e:
         logger.warning("curve_fit failed: %s", e)
         return None
 
     b, c = popt
-    perr = np.sqrt(np.diag(pcov))         # standard errors
+    perr = np.sqrt(np.diag(pcov))
+    dof = max(1, len(y) - 2)
+    t_crit = t_dist.ppf((1 + CI_LEVEL) / 2, dof)
 
-    # 95% CI using t-distribution
-    n_pts   = len(x)
-    n_params = 2
-    dof     = max(1, n_pts - n_params)
-    t_crit  = t_dist.ppf((1 + CI_LEVEL) / 2, dof)
-    b_ci    = float(t_crit * perr[0])
-    c_ci    = float(t_crit * perr[1])
-
-    # R²
-    y_pred  = degradation_model(x, b, c)
-    ss_res  = np.sum((y - y_pred) ** 2)
-    ss_tot  = np.sum((y - y.mean()) ** 2)
-    r2      = float(1 - ss_res / ss_tot) if ss_tot > 0 else 0.0
+    y_pred = degradation_model(x, b, c)
+    ss_res = float(np.sum((y - y_pred) ** 2))
+    ss_tot = float(np.sum((y - y.mean()) ** 2))
+    r2 = 1 - ss_res / ss_tot if ss_tot > 0 else 0.0
 
     return {
-        "b":        float(b),
-        "c":        float(c),
-        "b_ci":     b_ci,
-        "c_ci":     c_ci,
-        "r2":       round(r2, 4),
-        "n_stints": n_stints,
-        "n_laps":   len(fit_df),
+        "b": float(b), "c": float(c),
+        "b_ci": float(t_crit * perr[0]), "c_ci": float(t_crit * perr[1]),
+        "r2": round(float(r2), 4),
+        "n_stints": int(n_stints), "n_laps": int(len(cell_df)),
     }
 
 
 # ---------------------------------------------------------------------------
-# Batch fitting
+# Hierarchical fitting
 # ---------------------------------------------------------------------------
 
-def fit_all_curves(features_df: pd.DataFrame) -> pd.DataFrame:
+def fit_all_curves(stint_laps: pd.DataFrame) -> pd.DataFrame:
+    """Fit every (compound × circuit × era) cell with hierarchical pooling.
+
+    For each cell present in the data, use the deepest level with enough stints:
+        circuit  : that exact (compound, circuit, era)      >= MIN_STINTS_CIRCUIT
+        era      : all circuits for (compound, era)          >= MIN_STINTS_POOLED
+        compound : all eras+circuits for compound             >= MIN_STINTS_POOLED
+    Returns one row per cell: Compound, CircuitKey, Era, pool_level, b, c, CIs,
+    r2, n_stints, n_laps (counts are from the pool actually fitted).
     """
-    Fit degradation curves for all (compound, circuit, era) combinations.
+    # Pre-fit the pooled fallbacks once
+    era_fits: dict[tuple[str, int], dict | None] = {}
+    for (comp, era), g in stint_laps.groupby(["Compound", "Era"]):
+        f = fit_cell(g)
+        era_fits[(comp, int(era))] = f if f and f["n_stints"] >= MIN_STINTS_POOLED else None
 
-    Parameters
-    ----------
-    features_df : pd.DataFrame
-        Full features DataFrame from build_features() — must include StintID.
+    compound_fits: dict[str, dict | None] = {}
+    for comp, g in stint_laps.groupby("Compound"):
+        f = fit_cell(g)
+        compound_fits[comp] = f if f and f["n_stints"] >= MIN_STINTS_POOLED else None
 
-    Returns
-    -------
-    pd.DataFrame with one row per (compound, circuit, era), columns:
-        Compound, CircuitKey, Era, b, c, b_ci, c_ci, r2, n_stints, n_laps
-    """
-    # Ensure StintID is present
-    if "StintID" not in features_df.columns:
-        logger.info("Adding StintID...")
-        features_df = add_stint_id(features_df)
+    rows = []
+    cells = stint_laps.groupby(["Compound", "CircuitKey", "Era"])
+    logger.info("Fitting %d (compound × circuit × era) cells with pooling fallback", len(cells))
 
-    # Filter out pit laps and short stints
-    df = features_df[features_df["TyreLife"] > 1].copy()
-
-    results = []
-    groups = df.groupby(["Compound", "CircuitKey", "Era"])
-    total  = len(groups)
-
-    logger.info("Fitting degradation curves for %d (compound × circuit × era) groups", total)
-
-    for (compound, circuit, era), group in groups:
-        result = fit_degradation_curve(group)
-
-        if result is None:
-            logger.debug(
-                "No fit: %s × %s × Era%d (n_laps=%d)",
-                compound, circuit, era, len(group),
-            )
+    for (comp, circuit, era), g in cells:
+        era = int(era)
+        fit = fit_cell(g)
+        if fit is not None and fit["n_stints"] >= MIN_STINTS_CIRCUIT:
+            level = "circuit"
+        elif era_fits.get((comp, era)) is not None:
+            fit, level = era_fits[(comp, era)], "era"
+        elif compound_fits.get(comp) is not None:
+            fit, level = compound_fits[comp], "compound"
+        else:
+            logger.warning("No usable fit at any level: %s × %s × Era%d", comp, circuit, era)
             continue
 
-        results.append({
-            "Compound":   compound,
-            "CircuitKey": circuit,
-            "Era":        era,
-            **result,
+        rows.append({
+            "Compound": comp, "CircuitKey": circuit, "Era": era,
+            "pool_level": level, **fit,
         })
-        logger.info(
-            "  %-12s %-35s Era%d | b=%.4f±%.4f  c=%.5f±%.5f  r²=%.3f  n=%d stints",
-            compound, circuit, era,
-            result["b"], result["b_ci"],
-            result["c"], result["c_ci"],
-            result["r2"], result["n_stints"],
-        )
 
-    curves_df = pd.DataFrame(results)
-    logger.info(
-        "Fitted %d/%d curves successfully", len(curves_df), total
-    )
-    return curves_df
+    curves = pd.DataFrame(rows)
+    if len(curves):
+        logger.info(
+            "Fitted %d cells | levels: %s",
+            len(curves), curves["pool_level"].value_counts().to_dict(),
+        )
+    return curves
+
+
+# ---------------------------------------------------------------------------
+# Prediction helper (consumed by the Phase 4 simulation engine)
+# ---------------------------------------------------------------------------
+
+def predict_degradation(
+    curves: pd.DataFrame,
+    compound: str,
+    circuit: str,
+    era: int,
+    age: np.ndarray | float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Degradation delta (s, relative to fresh tyre age=1) with a 95% CI band.
+
+    Looks up the cell row (already pool-resolved by fit_all_curves); falls back
+    to the closest available row for the compound if the exact cell is missing.
+    Returns (mid, lo, hi) arrays.
+    """
+    sel = curves[
+        (curves["Compound"] == compound)
+        & (curves["CircuitKey"] == circuit)
+        & (curves["Era"] == era)
+    ]
+    if sel.empty:
+        sel = curves[(curves["Compound"] == compound) & (curves["Era"] == era)]
+    if sel.empty:
+        sel = curves[curves["Compound"] == compound]
+    if sel.empty:
+        raise KeyError(f"No tyre curve for compound={compound}")
+
+    row = sel.iloc[0]
+    age = np.asarray(age, dtype=float)
+    mid = degradation_delta(row["b"], row["c"], age)
+    lo  = degradation_delta(row["b"] - row["b_ci"], row["c"] - row["c_ci"], age)
+    hi  = degradation_delta(row["b"] + row["b_ci"], row["c"] + row["c_ci"], age)
+    return mid, lo, hi
 
 
 # ---------------------------------------------------------------------------
@@ -234,101 +286,76 @@ def fit_all_curves(features_df: pd.DataFrame) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 
 def plot_degradation_curves(
-    curves_df: pd.DataFrame,
-    features_df: pd.DataFrame,
+    curves: pd.DataFrame,
+    stint_laps: pd.DataFrame,
+    era: int,
     circuits: list[str] | None = None,
     compounds: list[str] | None = None,
-) -> None:
-    """
-    Plot fitted degradation curves vs actual data for selected circuits.
-    Saved to reports/tyre/degradation_curves.png
+) -> Path | None:
+    """Fitted curves + CI bands over actual per-stint delta traces, one era.
 
-    Default: top 4 circuits by data volume, SOFT + MEDIUM compounds.
+    Default circuits = top 4 by lap volume within the era.
+    Saved to reports/tyre/degradation_curves_era{era}.png
     """
+    era_laps = stint_laps[stint_laps["Era"] == era]
+    if era_laps.empty:
+        logger.warning("No laps for Era %d — skipping plot", era)
+        return None
+
     if circuits is None:
-        top_circuits = (
-            features_df.groupby("CircuitKey").size()
-            .sort_values(ascending=False)
-            .head(4)
-            .index.tolist()
+        circuits = (
+            era_laps.groupby("CircuitKey").size().sort_values(ascending=False)
+            .head(4).index.tolist()
         )
-        circuits = top_circuits
-
     if compounds is None:
-        compounds = ["SOFT", "MEDIUM", "HARD"]
-
-    if "StintID" not in features_df.columns:
-        features_df = add_stint_id(features_df)
+        compounds = SLICK_COMPOUNDS
 
     fig, axes = plt.subplots(
         len(circuits), len(compounds),
-        figsize=(5 * len(compounds), 4 * len(circuits)),
+        figsize=(5 * len(compounds), 3.5 * len(circuits)),
         squeeze=False,
     )
 
-    tyre_age_range = np.linspace(1, 40, 100)
-
-    for row_idx, circuit in enumerate(circuits):
-        for col_idx, compound in enumerate(compounds):
-            ax = axes[row_idx][col_idx]
-
-            # Actual data (Era 0 only for readability)
-            actual = features_df[
-                (features_df["CircuitKey"] == circuit) &
-                (features_df["Compound"] == compound) &
-                (features_df["Era"] == 0)
+    for r, circuit in enumerate(circuits):
+        for col, compound in enumerate(compounds):
+            ax = axes[r][col]
+            actual = era_laps[
+                (era_laps["CircuitKey"] == circuit) & (era_laps["Compound"] == compound)
             ]
+            for _, stint in actual.groupby(STINT_KEYS):
+                ax.plot(stint["TyreLife"], stint["Delta"],
+                        alpha=0.18, color="steelblue", linewidth=0.8)
 
-            if len(actual) > 0:
-                # Plot normalised deltas per stint
-                for _, stint in actual.groupby(
-                    ["Season", "RoundNumber", "Driver", "StintID"]
-                    if "StintID" in actual.columns
-                    else ["Season", "RoundNumber", "Driver"]
-                ):
-                    stint = stint.sort_values("TyreLife")
-                    if len(stint) < MIN_LAPS_PER_STINT:
-                        continue
-                    baseline = stint["LapTimeSeconds"].iloc[0]
-                    ax.plot(
-                        stint["TyreLife"],
-                        stint["LapTimeSeconds"] - baseline,
-                        alpha=0.2, color="steelblue", linewidth=0.8,
-                    )
-
-            # Fitted curve + CI band
-            curve_row = curves_df[
-                (curves_df["CircuitKey"] == circuit) &
-                (curves_df["Compound"] == compound) &
-                (curves_df["Era"] == 0)
+            cell = curves[
+                (curves["CircuitKey"] == circuit) & (curves["Compound"] == compound)
+                & (curves["Era"] == era)
             ]
-
-            if len(curve_row) > 0:
-                row = curve_row.iloc[0]
-                y_fit  = degradation_model(tyre_age_range, row["b"], row["c"])
-                y_upper = degradation_model(tyre_age_range, row["b"] + row["b_ci"], row["c"] + row["c_ci"])
-                y_lower = degradation_model(tyre_age_range, row["b"] - row["b_ci"], row["c"] - row["c_ci"])
-
-                ax.plot(tyre_age_range, y_fit, color="#E8002D", linewidth=2,
-                        label=f"fit (r²={row['r2']:.2f})")
-                ax.fill_between(tyre_age_range, y_lower, y_upper,
-                                alpha=0.25, color="#E8002D", label="95% CI")
+            if len(cell):
+                row = cell.iloc[0]
+                max_age = max(actual["TyreLife"].max() if len(actual) else 30, 10)
+                ages = np.linspace(1, max_age, 100)
+                mid = degradation_delta(row["b"], row["c"], ages)
+                lo  = degradation_delta(row["b"] - row["b_ci"], row["c"] - row["c_ci"], ages)
+                hi  = degradation_delta(row["b"] + row["b_ci"], row["c"] + row["c_ci"], ages)
+                ax.plot(ages, mid, color="#E8002D", linewidth=2,
+                        label=f"fit [{row['pool_level']}] r²={row['r2']:.2f}")
+                ax.fill_between(ages, lo, hi, alpha=0.25, color="#E8002D", label="95% CI")
                 ax.legend(fontsize=7)
 
-            circuit_short = circuit.replace(" Grand Prix", "")
-            ax.set_title(f"{circuit_short} — {compound}", fontsize=9)
-            ax.set_xlabel("Tyre Age (laps)", fontsize=8)
-            ax.set_ylabel("Δ Lap Time (s)", fontsize=8)
+            ax.set_title(f"{circuit.replace(' Grand Prix', '')} — {compound}", fontsize=9)
+            ax.set_xlabel("Tyre age (laps)", fontsize=8)
+            ax.set_ylabel("Δ fuel-corrected lap time (s)", fontsize=8)
             ax.axhline(0, color="gray", linewidth=0.5, linestyle="--")
             ax.grid(True, alpha=0.3)
 
-    plt.suptitle("Tyre Degradation Curves — Fitted vs Actual (Era 0: 2022-2025)", fontsize=12)
+    era_name = {0: "2022-2025 ground effect", 1: "2026+ active aero"}.get(era, str(era))
+    plt.suptitle(f"Tyre degradation — fitted vs actual (Era {era}: {era_name})", fontsize=12)
     plt.tight_layout()
-
-    out_path = REPORTS_DIR / "degradation_curves.png"
-    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    out = REPORTS_DIR / f"degradation_curves_era{era}.png"
+    fig.savefig(out, dpi=150, bbox_inches="tight")
     plt.close(fig)
-    logger.info("Degradation curves saved → %s", out_path)
+    logger.info("Plot saved → %s", out)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -336,65 +363,57 @@ def plot_degradation_curves(
 # ---------------------------------------------------------------------------
 
 def fit() -> pd.DataFrame:
-    """Load data, fit all curves, save results."""
-
-    raw_dir = PROJECT_ROOT / "data" / "raw"
-    parquet_files = list(raw_dir.glob("*.parquet"))
-    if not parquet_files:
-        raise FileNotFoundError(
-            f"No parquet files in {raw_dir}. Run ingest.py first."
-        )
-
-    logger.info("Loading %d parquet files...", len(parquet_files))
-    dfs = [pd.read_parquet(f) for f in sorted(parquet_files)]
-    raw_df = pd.concat(dfs, ignore_index=True)
-
-    validated_df = validate_laps(raw_df)
-    features_df  = build_features(validated_df)
-    features_df  = add_stint_id(features_df)
-
+    """Load data, fit all curves with pooling, save artifacts, log to MLflow."""
+    df = load_tft_data()      # per-round glob + dedup + StintID/TrackStatus carry-back
+    stint_laps = prepare_stint_laps(df)
     logger.info(
-        "Data loaded: %d laps | %d circuits | seasons %s",
-        len(features_df),
-        features_df["CircuitKey"].nunique(),
-        sorted(features_df["Season"].unique()),
+        "Prepared %d green slick laps in %d stints (%d circuits, eras %s)",
+        len(stint_laps), stint_laps.groupby(STINT_KEYS).ngroups,
+        stint_laps["CircuitKey"].nunique(), sorted(stint_laps["Era"].unique()),
     )
 
-    # Fit curves
-    curves_df = fit_all_curves(features_df)
+    curves = fit_all_curves(stint_laps)
+    if curves.empty:
+        raise RuntimeError("No tyre curves fitted — check input data")
 
-    # Save curves
-    curves_path = MODELS_DIR / "tyre_curves.joblib"
-    joblib.dump(curves_df, curves_path)
-    logger.info("Tyre curves saved → %s", curves_path)
+    joblib.dump(curves, MODELS_DIR / "tyre_curves.joblib")
+    curves.to_csv(REPORTS_DIR / "tyre_curves.csv", index=False)
+    logger.info("Saved tyre_curves.joblib + tyre_curves.csv")
 
-    # Also save as CSV for inspection
-    csv_path = REPORTS_DIR / "tyre_curves.csv"
-    curves_df.to_csv(csv_path, index=False)
-    logger.info("Tyre curves CSV  → %s", csv_path)
+    plot_paths = [plot_degradation_curves(curves, stint_laps, era) for era in (0, 1)]
 
-    # Diagnostic plots
-    plot_degradation_curves(curves_df, features_df)
+    mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
+    mlflow.set_experiment(EXPERIMENT_NAME)
+    with mlflow.start_run(run_name="tyre_curves"):
+        mlflow.log_params({
+            "model": "quadratic_delta_curvefit",
+            "fuel_corrected": True, "green_flag_only": True,
+            "compounds": ",".join(SLICK_COMPOUNDS),
+            "min_stints_circuit": MIN_STINTS_CIRCUIT,
+            "min_stints_pooled": MIN_STINTS_POOLED,
+            "min_laps_per_stint": MIN_LAPS_PER_STINT,
+        })
+        circuit_lvl = curves[curves["pool_level"] == "circuit"]
+        mlflow.log_metrics({
+            "n_cells": len(curves),
+            "n_circuit_level": int((curves["pool_level"] == "circuit").sum()),
+            "n_era_level": int((curves["pool_level"] == "era").sum()),
+            "n_compound_level": int((curves["pool_level"] == "compound").sum()),
+            "mean_r2_circuit_level": float(circuit_lvl["r2"].mean()) if len(circuit_lvl) else float("nan"),
+            "mean_b": float(curves["b"].mean()),
+            "mean_c": float(curves["c"].mean()),
+        })
+        mlflow.log_artifact(str(REPORTS_DIR / "tyre_curves.csv"))
+        for p in plot_paths:
+            if p is not None:
+                mlflow.log_artifact(str(p))
 
-    # Summary stats
     logger.info("=" * 60)
-    logger.info("TYRE MODEL COMPLETE")
-    logger.info("  Curves fitted: %d", len(curves_df))
-    logger.info(
-        "  Mean r²:       %.3f",
-        curves_df["r2"].mean() if len(curves_df) > 0 else float("nan"),
-    )
-    logger.info(
-        "  Circuits covered: %d",
-        curves_df["CircuitKey"].nunique() if len(curves_df) > 0 else 0,
-    )
-    logger.info(
-        "  Compounds covered: %s",
-        sorted(curves_df["Compound"].unique().tolist()) if len(curves_df) > 0 else [],
-    )
+    logger.info("TYRE MODEL COMPLETE — %d cells | pool levels %s | circuit-level mean r² %.3f",
+                len(curves), curves["pool_level"].value_counts().to_dict(),
+                circuit_lvl["r2"].mean() if len(circuit_lvl) else float("nan"))
     logger.info("=" * 60)
-
-    return curves_df
+    return curves
 
 
 if __name__ == "__main__":

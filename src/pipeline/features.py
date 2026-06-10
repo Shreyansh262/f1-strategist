@@ -55,6 +55,54 @@ ERA_BOUNDARY: Final[int] = 2026
 TRACK_TEMP_FALLBACK: Final[float] = 35.0
 AIR_TEMP_FALLBACK:   Final[float] = 25.0
 
+# ---------------------------------------------------------------------------
+# Engine (power-unit) supplier — DOMAIN KNOWLEDGE, not learned from data.
+# Known before every race weekend, so there is no leakage. The value of this
+# feature is cross-era transfer: a brand-new 2026 team (Cadillac) is unseen as
+# a Team, but its PU lineage (Ferrari customer) is known and shared with teams
+# the model HAS seen. Season-aware because suppliers change (Aston Martin
+# Mercedes->Honda in 2026, Alpine Renault->Mercedes, Sauber Ferrari->Audi...).
+# Default era covers 2022-2025; the 2026 dict overrides where changed.
+# ---------------------------------------------------------------------------
+_ENGINE_2022_2025: Final[dict[str, str]] = {
+    "Red Bull Racing": "Honda RBPT",
+    "AlphaTauri":      "Honda RBPT",
+    "RB":              "Honda RBPT",
+    "Racing Bulls":    "Honda RBPT",
+    "Mercedes":        "Mercedes",
+    "McLaren":         "Mercedes",
+    "Aston Martin":    "Mercedes",
+    "Williams":        "Mercedes",
+    "Ferrari":         "Ferrari",
+    "Haas F1 Team":    "Ferrari",
+    "Alfa Romeo":      "Ferrari",
+    "Kick Sauber":     "Ferrari",
+    "Alpine":          "Renault",
+}
+_ENGINE_2026_OVERRIDES: Final[dict[str, str]] = {
+    "Red Bull Racing": "Red Bull Ford",
+    "Racing Bulls":    "Red Bull Ford",
+    "Aston Martin":    "Honda",
+    "Alpine":          "Mercedes",
+    "Audi":            "Audi",
+    "Cadillac":        "Ferrari",
+}
+# Fixed a-priori encoding over ALL known engine makers (incl. 2026 entrants).
+# Unlike Team/Circuit this is NOT frozen-from-train: the dictionary is domain
+# knowledge fixed before any data is seen, like the Era boundary.
+ENGINE_ORDER: Final[dict[str, int]] = {
+    e: i for i, e in enumerate(sorted({
+        *_ENGINE_2022_2025.values(), *_ENGINE_2026_OVERRIDES.values()
+    }))
+}
+
+
+def engine_for(team: str, season: int) -> str | None:
+    """Power-unit supplier for a team in a season; None if unknown."""
+    if season >= 2026 and team in _ENGINE_2026_OVERRIDES:
+        return _ENGINE_2026_OVERRIDES[team]
+    return _ENGINE_2022_2025.get(team)
+
 
 # ---------------------------------------------------------------------------
 # Individual feature transforms
@@ -70,6 +118,47 @@ def add_compound_encoding(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _freeze_mapping(values: pd.Series, filename: str, save: bool) -> dict[str, int]:
+    """Build an alphabetical label mapping; optionally persist it to data/mappings/.
+
+    Persisting is opt-in (save=True) so that tests, notebooks, and ad-hoc runs on
+    small frames can never clobber the production mapping artifacts. Only the
+    trainer's freeze step (freeze_encoding_mappings) should save.
+    """
+    unique = sorted(values.dropna().unique())
+    mapping = {v: i for i, v in enumerate(unique)}
+    if save:
+        MAPPINGS_DIR.mkdir(parents=True, exist_ok=True)
+        map_path = MAPPINGS_DIR / filename
+        with open(map_path, "w") as f:
+            json.dump(mapping, f, indent=2)
+        logger.info("Froze mapping (%d entries) → %s", len(mapping), map_path)
+    return mapping
+
+
+def freeze_encoding_mappings(train_df: pd.DataFrame) -> tuple[dict[str, int], dict[str, int]]:
+    """Build AND persist circuit/team mappings from the TRAINING split only.
+
+    This is the single sanctioned writer of data/mappings/*.json. Mappings must be
+    frozen from train so unseen val/test circuits/teams hit the -1 sentinel path —
+    the same path a genuinely new team takes at serving time (Section 5/6).
+
+    Returns (circuit_mapping, team_mapping).
+    """
+    circuit_map = _freeze_mapping(train_df["CircuitKey"], "circuit_map.json", save=True)
+    team_map    = _freeze_mapping(train_df["Team"],       "team_map.json",    save=True)
+    return circuit_map, team_map
+
+
+def load_encoding_mappings() -> tuple[dict[str, int], dict[str, int]]:
+    """Load the frozen circuit/team mappings for inference/serving."""
+    with open(MAPPINGS_DIR / "circuit_map.json") as f:
+        circuit_map = json.load(f)
+    with open(MAPPINGS_DIR / "team_map.json") as f:
+        team_map = json.load(f)
+    return circuit_map, team_map
+
+
 def add_circuit_encoding(
     df: pd.DataFrame,
     mapping: dict[str, int] | None = None,
@@ -77,13 +166,9 @@ def add_circuit_encoding(
     """
     Label-encode CircuitKey using a frozen mapping dictionary.
 
-    Training mode (mapping=None):
-        Builds mapping from df sorted alphabetically, saves to
-        data/mappings/circuit_map.json. Call this once during training.
-
-    Inference mode (mapping=dict):
-        Pass the loaded circuit_map.json. Circuits not in the mapping
-        receive sentinel value -1.
+    mapping=None builds an in-memory mapping from df (does NOT save — use
+    freeze_encoding_mappings() to persist train-frozen mappings).
+    mapping=dict applies the frozen mapping; unseen circuits → sentinel -1.
 
     Leakage check: circuit identity is known before race start — no future
     information used. Frozen mapping ensures train/inference consistency.
@@ -91,16 +176,7 @@ def add_circuit_encoding(
     df = df.copy()
 
     if mapping is None:
-        unique_circuits = sorted(df["CircuitKey"].dropna().unique())
-        mapping = {c: i for i, c in enumerate(unique_circuits)}
-        MAPPINGS_DIR.mkdir(parents=True, exist_ok=True)
-        map_path = MAPPINGS_DIR / "circuit_map.json"
-        with open(map_path, "w") as f:
-            json.dump(mapping, f, indent=2)
-        logger.info(
-            "Built and saved circuit mapping (%d circuits) → %s",
-            len(mapping), map_path,
-        )
+        mapping = _freeze_mapping(df["CircuitKey"], "circuit_map.json", save=False)
 
     df["CircuitEncoded"] = df["CircuitKey"].map(mapping).fillna(-1).astype(int)
 
@@ -121,13 +197,9 @@ def add_team_encoding(
     """
     Label-encode Team using a frozen mapping dictionary.
 
-    Training mode (mapping=None):
-        Builds mapping from df sorted alphabetically, saves to
-        data/mappings/team_map.json. Call this once during training.
-
-    Inference mode (mapping=dict):
-        Pass the loaded team_map.json. Teams not in the mapping
-        receive sentinel value -1.
+    mapping=None builds an in-memory mapping from df (does NOT save — use
+    freeze_encoding_mappings() to persist train-frozen mappings).
+    mapping=dict applies the frozen mapping; unseen teams → sentinel -1.
 
     Leakage check: team identity is known before race start — no future
     information used. Frozen mapping ensures train/inference consistency.
@@ -135,16 +207,7 @@ def add_team_encoding(
     df = df.copy()
 
     if mapping is None:
-        unique_teams = sorted(df["Team"].dropna().unique())
-        mapping = {t: i for i, t in enumerate(unique_teams)}
-        MAPPINGS_DIR.mkdir(parents=True, exist_ok=True)
-        map_path = MAPPINGS_DIR / "team_map.json"
-        with open(map_path, "w") as f:
-            json.dump(mapping, f, indent=2)
-        logger.info(
-            "Built and saved team mapping (%d teams) → %s",
-            len(mapping), map_path,
-        )
+        mapping = _freeze_mapping(df["Team"], "team_map.json", save=False)
 
     df["TeamEncoded"] = df["Team"].map(mapping).fillna(-1).astype(int)
 
