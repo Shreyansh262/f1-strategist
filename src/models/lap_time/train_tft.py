@@ -125,13 +125,16 @@ def make_datasets(df: pd.DataFrame):
         allow_missing_timesteps=True,
     )
 
-    # pf 1.7.0: from_dataset + predict_mode=True for eval sets (stop_randomization removed)
+    # predict=False keeps ALL decodable windows -> one prediction per lap (with enough
+    # encoder history), which is the fair per-lap comparison against LightGBM's green MAE.
+    # predict=True would keep only the last window per stint (the most-degraded lap),
+    # inflating MAE and scoring a harder, smaller subset than the tree baseline.
     validation = (
-        TimeSeriesDataSet.from_dataset(training, val_df, predict=True)
+        TimeSeriesDataSet.from_dataset(training, val_df, predict=False)
         if not val_df.empty else None
     )
     test = (
-        TimeSeriesDataSet.from_dataset(training, test_df, predict=True)
+        TimeSeriesDataSet.from_dataset(training, test_df, predict=False)
         if not test_df.empty else None
     )
     return training, validation, test
