@@ -430,8 +430,12 @@ Undertraining (20 epochs vs ~26) is a partial confound, so it's "no improvement,
 causal result. v1 restored as deployed; v2 archived (`tft_v2_artifacts.zip`). A converged
 v2 re-run is the clean tiebreak if a Kaggle slot frees up (optional, low priority).
 
-**NEXT (user action): choose Phase 6 (dashboard — recommended next, biggest portfolio visual)
-or Phase 5 (RL stretch, ~10 Kaggle GPU hrs).** Playbooks: Sections 10.5 / 10.6.
+**NEXT (user action): run `notebooks/06_tft_hpo_kaggle.ipynb` on Kaggle T4 (~6-8h)** — 2-stage
+TFT hyperparameter sweep (6 configs × 6 epochs screen → top-2 converged, val-green-MAE selection,
+v1 bar 1.12s guard; optional converged v2-features tiebreak cell). v1 was hand-picked, never swept —
+this closes the last Phase 0-4 quality gap. Resumable per-trial (needs Persistence = Files only).
+After artifacts come back: evaluate.py + pytest + card/Section-8 update locally.
+**Then choose Phase 6 (dashboard — recommended) or Phase 5 (RL).** Playbooks: Sections 10.5 / 10.6.
 
 **Watch:** TFT win rests on autoregressive in-stint history (thesis, not leakage). 2026 test =
 6 races, noisy. Kaggle: T4 not P100 (Error 15). Model binaries gitignored — download from Kaggle
