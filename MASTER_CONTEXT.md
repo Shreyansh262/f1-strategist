@@ -10,8 +10,11 @@
 ###     simulation/engine.py (vectorized MC showcase), validate_sim.py (replay coverage 0.79)
 ###   - notebooks/05_tft_v2_kaggle.ipynb ready: TFT v2 (Driver+EngineMaker static cats)
 ###   - TUTOR.md added: full teaching walkthrough of the project for interview prep
-### GPU note: Phase 2 ran on Kaggle T4. ~28 Kaggle GPU hours remain; next GPU job =
-### notebook 05 (TFT v2 + recalibration, ~2-4h). Then RL (Phase 5, ~10h).
+### v3.3 (2026-06-11): TFT v2 RAN — did NOT beat v1 (val green 1.12->1.14 flat, test green
+###   1.62->1.94 cross-era degradation); v1 KEPT as deployed, v2 archived. Documented finding
+###   (driver-as-car-proxy, same as LightGBM ablation); undertrained (20 ep) = partial confound.
+### GPU note: Phase 2 ran on Kaggle T4. ~24 Kaggle GPU hours remain (v2 spent ~2h); next GPU
+### job = RL (Phase 5, ~10h) OR optional converged v2 re-run. Phase 6 dashboard is all-CPU.
 
 ---
 
@@ -401,9 +404,13 @@ v3 PHASES (no fixed weeks — quality first, sprint pace):
                 4 races 2025, 52 drivers, central-80% coverage 0.79 (Japan 1.00, Hungary
                 0.78, Monaco 1.00, Bahrain 0.53 — SC-affected; no SC model in v1, documented).
                 pit_loss.py: 2,153 green pit events, per-circuit medians 19.6-29.7s.
-  [ ] Kaggle next — notebooks/05_tft_v2_kaggle.ipynb: TFT v2 (Driver+EngineMaker static
-                cats) + recalibration in one session (~2-4h). Bars: green 1.12 val / 1.62
-                test. After download: evaluate.py, pytest, update card + Section 8.
+  [x] TFT v2 (2026-06-11) — notebooks/05_tft_v2_kaggle.ipynb: added Driver+EngineMaker static
+                cats. DID NOT BEAT v1 → v1 KEPT. val green 1.12->1.14 (flat), test green
+                1.62->1.94 (cross-era degradation = same driver-as-car-proxy effect as the
+                LightGBM ablation, now on the sequence model). Confound: v2 early-stopped at
+                20 epochs (v1 ~26) → "no improvement", not clean causal proof. v1 artifacts
+                restored from tft_artifacts.zip + git (recalibration); v2 archived in
+                tft_v2_artifacts.zip. evaluate.py re-run, pytest 71 green.
   [ ] Phase 5 — STRETCH: RL pit agent in the simulator, vs MDP. Only if dashboard not more
                 valuable; Section 10.5. (~10 Kaggle GPU hrs)
   [ ] Phase 6 — FastAPI + Streamlit dashboard + HTML showcase page. Section 10.6.
@@ -416,14 +423,15 @@ v3 PHASES (no fixed weeks — quality first, sprint pace):
 
 **Phases 0–4 DONE and validated** (see tracker). 71 tests passing locally.
 
-**NEXT (user action): run `notebooks/05_tft_v2_kaggle.ipynb` on Kaggle (GPU T4, ~2–4h).**
-It trains TFT v2 (Driver + EngineMaker static categoricals), evaluates, recalibrates, and zips
-artifacts. Bars: v1 green 1.12 val / 1.62 test. Either outcome is reportable. After download:
-unzip into repo root → `python -m src.models.lap_time.evaluate` → `pytest -q` → update model
-card + Section 8.
+**TFT v2 DONE (2026-06-11): ran, did not beat v1, v1 kept.** Adding Driver+EngineMaker static
+categoricals left val green flat (1.12→1.14) and degraded cross-era test green 1.62→1.94 — the
+driver-as-car-proxy cross-era cost from the LightGBM ablation, now on the sequence model.
+Undertraining (20 epochs vs ~26) is a partial confound, so it's "no improvement," not a clean
+causal result. v1 restored as deployed; v2 archived (`tft_v2_artifacts.zip`). A converged
+v2 re-run is the clean tiebreak if a Kaggle slot frees up (optional, low priority).
 
-**Then choose: Phase 6 (dashboard — recommended next, biggest portfolio visual) or Phase 5
-(RL stretch, ~10 Kaggle GPU hrs).** Playbooks: Sections 10.5 / 10.6.
+**NEXT (user action): choose Phase 6 (dashboard — recommended next, biggest portfolio visual)
+or Phase 5 (RL stretch, ~10 Kaggle GPU hrs).** Playbooks: Sections 10.5 / 10.6.
 
 **Watch:** TFT win rests on autoregressive in-stint history (thesis, not leakage). 2026 test =
 6 races, noisy. Kaggle: T4 not P100 (Error 15). Model binaries gitignored — download from Kaggle
@@ -444,7 +452,7 @@ re-deriving design decisions. **Rules that apply to every playbook below:**
 ### 10.0 Kaggle GPU budget (~28 hours) — spend it exactly like this
 | Item | Hours | Phase | Notes |
 |---|---|---|---|
-| TFT v2 (add Driver static categorical + 6-config mini-sweep) | ~6 | optional, after 3.5 | Only if Phase 4 is on track; success bar = beat val green 1.12 |
+| ~~TFT v2 (Driver + EngineMaker static cats)~~ — DONE 2026-06-11, did not beat v1, v1 kept | ~2 spent | done | Success bar was beat val green 1.12; got 1.14 + test regressed 1.62→1.94. Optional converged re-run could revisit. |
 | RL agent training runs (PPO in the sim env) | ~10 | 5 | The only genuinely GPU-hungry remaining item |
 | Large sim sweeps / sensitivity analysis (N=10k rollouts × strategies) | ~4 | 4 | Engine must run CPU-first; GPU is a speedup, not a dependency |
 | Buffer for re-runs / mistakes | ~8 | — | Kaggle sessions die; checkpoints every epoch |

@@ -54,6 +54,16 @@ Era 0 lands exactly on nominal; era 1 overshoots conservatively (one-race calibr
 - The 2026 test set is only 6 races and statistically noisy — read 1.67s green with that caveat; the val→test gap (1.11→1.67 green) reflects the genuine cross-regulation shift plus small-sample noise.
 - **Per-circuit spread is large** (`reports/lap_time/tft_breakdown.csv`): green MAE is excellent on conventional tracks (Japan 0.46, Hungary 0.56, China 0.73) but poor on street/atypical circuits — Canada (val 2.96 / test 3.13) and Monaco (val 2.83 / test 2.07) are the worst. Aggregate green MAE hides this; the sim should treat street-circuit predictions as higher-variance.
 
+## TFT v2 — driver + engine-maker static categoricals (ran, rejected; v1 kept)
+The card's ablation note (above) flagged that the EngineMaker/Driver features' "real test is the TFT v2 run where `EngineMaker` is a static categorical and the 2026 boundary is in-distribution for evaluation." That run (`notebooks/05_tft_v2_kaggle.ipynb`, Kaggle T4) is done. **v2 added `Driver` + `EngineMaker` as static categoricals on top of v1's `CircuitKey/Team/Era/Compound`. It did not beat v1 on any split:**
+
+| Split | v1 (chosen) all / green | v2 all / green |
+|---|---|---|
+| Val 2025 (era0) | 2.25 / **1.12** | 2.43 / 1.14 |
+| Test 2026 (era1) | 3.78 / **1.62** | 4.14 / 1.94 |
+
+Val green was flat (1.12→1.14); the loss concentrated in the cross-era test (green 1.62→1.94, +20%). This is the **same driver-as-car-proxy mechanism the LightGBM ablation showed**: driver/engine identity is partly a stand-in for car pace, and across the 2026 boundary drivers switch teams and rookies are unseen, so the learned attribution transfers badly — now reproduced on the sequence model. **Honesty confound:** v2 early-stopped at 20 epochs vs v1's ~26, so undertraining is a partial confound — read this as "added identity features, got no improvement, kept v1," not as a clean causal proof that the features hurt. A converged re-run is the clean tiebreak if a Kaggle slot frees up. v1 artifacts (`models/tft_lap.*`, reports, recalibration) are the deployed set; v2 is archived in `tft_v2_artifacts.zip`.
+
 ## Key findings
 - **Cross-regulation generalization (the headline).** The 14-feature LightGBM holds green-lap MAE 2.16s val (era 0) → 2.11s test (era 1) — essentially flat across the 2022-25 → 2026 regulation boundary (the 16-feature variant trades a small val gain for 2.22s test; see the ablation above). A model trained only on ground-effect-era data carries that learning into the unseen active-aero era. **Caveat:** the 2026 test set is only 6 races, so test ≈ val means "generalizes within noise," not "generalizes *better* than val." A larger 2026 sample is needed to tighten this.
 - **RandomForest is kept as an instructive counter-example, not a candidate.** It collapses across the boundary (green test 8.30s vs green val 5.63s) because sklearn trees can't split integer-coded categoricals natively and RF never saw era 1 / new 2026 teams in training. The contrast is the motivation for LightGBM's native-categorical + regularized approach.

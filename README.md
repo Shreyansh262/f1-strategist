@@ -116,6 +116,6 @@ No live telemetry (tyre temps, fuel flow, ERS, active-aero state — the last es
 - [x] TFT quantile recalibration (era-aware split conformal — era-0 coverage 0.800 on the nose)
 - [x] Pit-strategy MDP (exact backward induction, two-compound rule, policy heatmaps)
 - [x] **Monte Carlo race-simulation engine** — 79% historical-replay coverage vs 80% target
-- [ ] TFT v2 on Kaggle (driver + engine-maker static categoricals) — `notebooks/05_tft_v2_kaggle.ipynb`
+- [x] TFT v2 on Kaggle (driver + engine-maker static categoricals) — **ran, did not beat v1, kept v1.** Adding `Driver` + `EngineMaker` static categoricals left val green flat (1.12→1.14) and degraded cross-era test green 1.62→1.94 — the same driver-as-car-proxy cross-era cost seen in the LightGBM ablation, now confirmed on the sequence model. (Caveat: v2 early-stopped at 20 epochs vs v1's ~26, so undertraining is a partial confound; read as "no improvement," not a clean causal result.) v1 remains the deployed TFT.
 - [ ] RL pit agent vs MDP in the simulator (stretch)
 - [ ] FastAPI + Streamlit dashboard + deployment

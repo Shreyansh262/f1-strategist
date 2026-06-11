@@ -11,7 +11,7 @@
     "era0": "2025 odd rounds (eval: even rounds)",
     "era1": "2026 round 1 (eval: remaining 2026 rounds \u2014 R1 is excluded from test coverage reporting)"
   },
-  "date": "2026-06-11",
-  "era0_shift_s": 0.0001,
-  "era1_shift_s": 0.5615
+  "date": "2026-06-10",
+  "era0_shift_s": 0.0824,
+  "era1_shift_s": 0.8677
 }
