@@ -1,0 +1,2 @@
+trial,hidden,lr,dropout,heads,n_params,epochs,minutes,val_mae_all,val_mae_green,ckpt
+v2_tiebreak,64,0.001,0.2,4,321739,18,16.5,2.309,1.083,/kaggle/working/hpo/v2_tiebreak/best.ckpt

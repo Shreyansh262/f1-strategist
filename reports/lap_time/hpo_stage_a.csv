@@ -1,0 +1,7 @@
+trial,hidden,lr,dropout,heads,n_params,epochs,minutes,val_mae_all,val_mae_green,ckpt
+a1_v1anchor,32,0.001,0.15,4,85565,6,5.9,2.5395,1.3288,/kaggle/working/hpo/a1_v1anchor/best.ckpt
+a2_small,16,0.001,0.1,2,24637,6,5.7,2.5712,1.3074,/kaggle/working/hpo/a2_small/best.ckpt
+a3_big,64,0.001,0.2,4,320581,6,5.6,2.4354,1.2566,/kaggle/working/hpo/a3_big/best.ckpt
+a4_lowlr,32,0.0003,0.15,4,85565,6,5.8,2.7011,1.4824,/kaggle/working/hpo/a4_lowlr/best-v1.ckpt
+a5_highlr,32,0.003,0.15,4,85565,6,5.7,2.4216,1.283,/kaggle/working/hpo/a5_highlr/best.ckpt
+a6_big_lowlr,64,0.0003,0.1,4,320581,6,5.7,2.5444,1.3671,/kaggle/working/hpo/a6_big_lowlr/best.ckpt

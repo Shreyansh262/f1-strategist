@@ -430,11 +430,19 @@ Undertraining (20 epochs vs ~26) is a partial confound, so it's "no improvement,
 causal result. v1 restored as deployed; v2 archived (`tft_v2_artifacts.zip`). A converged
 v2 re-run is the clean tiebreak if a Kaggle slot frees up (optional, low priority).
 
-**NEXT (user action): run `notebooks/06_tft_hpo_kaggle.ipynb` on Kaggle T4 (~6-8h)** — 2-stage
-TFT hyperparameter sweep (6 configs × 6 epochs screen → top-2 converged, val-green-MAE selection,
-v1 bar 1.12s guard; optional converged v2-features tiebreak cell). v1 was hand-picked, never swept —
-this closes the last Phase 0-4 quality gap. Resumable per-trial (needs Persistence = Files only).
-After artifacts come back: evaluate.py + pytest + card/Section-8 update locally.
+**HPO round 1 DONE (notebook 06, 2026-06-11, ~1.5h T4 — ~1 min/epoch, 5x faster than estimated):**
+v1-features sweep: best = h64 @ 1.1239 val green vs v1 1.12 — statistical tie, v1 config confirmed
+near-optimal for v1 features. **BUT the v2-features tiebreak (Driver+EngineMaker, h64, converged
+18 epochs) hit 1.083 val green — beats the v1 bar.** The old v2 failure was undertraining + h32;
+at h64 converged the features pay off. Notebook 06's deploy guard only checked Stage B, so it never
+deployed and the tiebreak ckpt wasn't zipped. CSVs: reports/lap_time/hpo_stage_{a,b}.csv +
+hpo_v2_tiebreak.csv.
+
+**NEXT (user action): run `notebooks/07_tft_hpo_round2_kaggle.ipynb` on Kaggle T4 (~2-3h)** —
+re-trains the v2@h64 champion (seed 42, gets its ckpt + test numbers), pushes h96/h128, sweeps
+encoder length 12→24, patience 10. Winner (val-selected, bar 1.12) → test eval + recalibration
+in-notebook. Cross-era test green reported honestly vs v1's 1.62 (driver-as-proxy risk, Errors #22).
+After artifacts: BACK UP local v1 models/ zip FIRST, then unzip, evaluate.py, pytest, docs.
 **Then choose Phase 6 (dashboard — recommended) or Phase 5 (RL).** Playbooks: Sections 10.5 / 10.6.
 
 **Watch:** TFT win rests on autoregressive in-stint history (thesis, not leakage). 2026 test =
