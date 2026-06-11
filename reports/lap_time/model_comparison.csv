@@ -1,9 +1,9 @@
 model,split,all_laps_mae,green_mae,n_all,n_green,era0_mae,era1_mae
 LightGBM,test,3.534,2.2165,6195,5481,,3.534
-TFT,test,3.7827,1.6169,7460,,,3.7827
+TFT,test,4.1404,1.9402,7460,,,4.1404
 BayesianRidge,test,4.1939,3.0854,6195,5481,,4.1939
 RandomForest,test,8.8715,8.3039,6195,5481,,8.8715
-TFT,val,2.2539,1.1197,25291,,2.2539,
+TFT,val,2.4324,1.1401,25291,,2.4324,
 LightGBM,val,3.4855,2.1445,20638,18952,3.4855,
 BayesianRidge,val,4.349,3.1348,20638,18952,4.349,
 RandomForest,val,6.4737,5.6294,20638,18952,6.4737,
