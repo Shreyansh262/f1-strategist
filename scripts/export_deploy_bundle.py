@@ -4,8 +4,7 @@ Creates deploy_bundle/ at the repo root containing everything needed to run
 the Streamlit dashboard on Hugging Face Spaces:
 
     deploy_bundle/
-      app.py                        <- HF entrypoint (thin wrapper)
-      dashboard/                    <- copied verbatim
+      dashboard/                    <- copied verbatim (app.py is the HF entrypoint)
       src/                          <- copied (ingest.py excluded — not needed at serve time)
       models/                       <- chosen_lap.joblib, tyre_curves.joblib, tft_calibration.json
       data/
@@ -193,7 +192,7 @@ colorFrom: red
 colorTo: gray
 sdk: streamlit
 sdk_version: "1.55.0"
-app_file: app.py
+app_file: dashboard/app.py
 pinned: false
 license: mit
 short_description: Lap-time TFT · Tyre curves · MDP pit policy · Monte-Carlo engine
@@ -212,9 +211,7 @@ An end-to-end AI system for Formula 1 race strategy, built as a portfolio projec
 
 ## Source code
 
-Full project: [github.com/your-username/f1-strategist](https://github.com/your-username/f1-strategist)
-
-Replace `your-username` with your actual GitHub username before pushing.
+Full project: [github.com/Shreyansh262/f1-strategist](https://github.com/Shreyansh262/f1-strategist)
 """
 
 
@@ -229,7 +226,11 @@ _REQUIREMENTS_DEPLOY = """\
 # are therefore excluded — this cuts ~500 MB from the installed footprint.
 #
 # torch CPU wheel is required because engine.py uses torch tensors for vectorised
-# Monte-Carlo rollouts (device="cpu"). The index-url selects the CPU-only build
+# Monte-Carlo rollouts (device="cpu"). The --extra-index-url adds the CPU-only
+# wheel index alongside PyPI so non-torch packages (streamlit, plotly, pandas, …)
+# still resolve from PyPI. Using --index-url instead would replace PyPI entirely
+# and cause those packages to fail to install on the PyTorch CPU index.
+# torch==2.11.0+cpu resolves only from the CPU index due to the +cpu local version.
 # (~240 MB wheel vs ~900 MB CUDA build).
 #
 # fastf1 is NOT required: the dashboard reads pre-built parquet files from data/raw/
@@ -249,34 +250,8 @@ joblib==1.5.3
 
 # CPU-only PyTorch — required for engine.py Monte-Carlo rollouts.
 # HF Spaces free tier has no GPU; this wheel is ~240 MB vs 900 MB CUDA build.
---index-url https://download.pytorch.org/whl/cpu
+--extra-index-url https://download.pytorch.org/whl/cpu
 torch==2.11.0+cpu
-"""
-
-# ---------------------------------------------------------------------------
-# HF entrypoint wrapper (app.py at bundle root)
-# ---------------------------------------------------------------------------
-
-_APP_WRAPPER = """\
-\"\"\"Hugging Face Spaces entrypoint.
-
-Adds the bundle root to sys.path so `import src` and `import theme` resolve
-correctly, then delegates to the real dashboard entry point.
-
-HF Spaces sets the working directory to the app root (this file's directory),
-so all relative paths inside dashboard/ and src/ resolve from here.
-\"\"\"
-from __future__ import annotations
-import sys
-from pathlib import Path
-
-_ROOT = Path(__file__).resolve().parent
-for _p in (str(_ROOT), str(_ROOT / "dashboard")):
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
-
-# Run the actual dashboard app
-exec(open(_ROOT / "dashboard" / "app.py").read())  # noqa: S102
 """
 
 # ---------------------------------------------------------------------------
@@ -294,7 +269,7 @@ def main() -> None:
     errors: list[str] = []
 
     # ---- Model artifacts -----------------------------------------------------
-    print("\n[1/6] Model artifacts")
+    print("\n[1/5] Model artifacts")
     for rel in MODEL_ARTIFACTS:
         src = PROJECT_ROOT / rel
         dst = BUNDLE / rel
@@ -307,7 +282,7 @@ def main() -> None:
             print(f"  MISSING {rel} — will warn at runtime")
 
     # ---- Data files (non-parquet) --------------------------------------------
-    print("\n[2/6] Data files")
+    print("\n[2/5] Data files")
     for rel in DATA_FILES:
         src = PROJECT_ROOT / rel
         dst = BUNDLE / rel
@@ -320,7 +295,7 @@ def main() -> None:
             print(f"  MISSING {rel}")
 
     # ---- Parquet (curated subset) --------------------------------------------
-    print("\n[3/6] Raw parquet (curated subset)")
+    print("\n[3/5] Raw parquet (curated subset)")
     src_raw = PROJECT_ROOT / "data" / "raw"
     dst_raw = BUNDLE / "data" / "raw"
     dst_raw.mkdir(parents=True, exist_ok=True)
@@ -330,7 +305,7 @@ def main() -> None:
         errors.append("MISSING data/raw directory")
 
     # ---- Reports -------------------------------------------------------------
-    print("\n[4/6] Reports")
+    print("\n[4/5] Reports")
     for rel in REPORT_FILES_LAP_TIME + REPORT_FILES_SIMULATION:
         src = PROJECT_ROOT / rel
         dst = BUNDLE / rel
@@ -342,7 +317,7 @@ def main() -> None:
             print(f"  skipped (absent) {rel}")
 
     # ---- Dashboard + src -----------------------------------------------------
-    print("\n[5/6] Dashboard and src code")
+    print("\n[5/5] Dashboard and src code")
 
     # Copy dashboard/ entirely (theme.py, app.py, pages/, .streamlit/)
     src_dashboard = PROJECT_ROOT / "dashboard"
@@ -387,12 +362,7 @@ def main() -> None:
             copied_src += 1
     print(f"  copied/created {copied_src} src modules (stubs for missing __init__.py)")
 
-    # ---- HF Space generated files --------------------------------------------
-    print("\n[6/6] HF Space generated files")
-
-    # app.py entrypoint wrapper at bundle root
-    (BUNDLE / "app.py").write_text(_APP_WRAPPER, encoding="utf-8")
-    print("  wrote app.py (HF entrypoint wrapper)")
+    # ---- HF Space generated files (requirements, README, .streamlit) ----------
 
     # requirements-deploy.txt
     (BUNDLE / "requirements-deploy.txt").write_text(_REQUIREMENTS_DEPLOY, encoding="utf-8")

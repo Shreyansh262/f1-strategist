@@ -84,6 +84,7 @@ cd deploy_bundle
 
 # Initialise as a git repo pointing at your HF Space
 git init
+git branch -M main
 git remote add origin https://huggingface.co/spaces/<your-username>/f1-strategist
 
 # Track large files with Git LFS (parquet + joblib are ~1 MB each, fine without
@@ -99,8 +100,16 @@ git commit -m "Phase 7: initial deploy"
 git push -u origin main
 ```
 
-HF will detect `requirements.txt`, install deps, find `app.py`, and launch
-Streamlit. Build logs are visible in the Space's "Logs" tab.
+**Authentication:** HF git remotes do not accept account passwords. Create a
+WRITE-scope access token at https://huggingface.co/settings/tokens and use it
+as the password when git prompts (username = your HF username). Alternatively,
+run `pip install -U huggingface_hub` then `hf auth login` (older CLIs:
+`huggingface-cli login`) before pushing.
+
+HF will detect `requirements.txt`, install deps, find `dashboard/app.py`
+(the `app_file` in `README.md` front-matter), and launch Streamlit.
+HF Spaces natively supports a subdirectory `app_file` — no root wrapper needed.
+Build logs are visible in the Space's "Logs" tab.
 
 ### Step 4 — Verify
 
@@ -109,6 +118,10 @@ Streamlit. Build logs are visible in the Space's "Logs" tab.
 3. The Overview page should show the KPI strip (TFT MAE values from the CSV).
 4. Open Live Replay → choose Season 2025 → any round → confirm laps load.
 5. Open Pre-Race → confirm tyre curves render.
+6. The sidebar must list **Pre-Race**, **Live Replay**, **Post-Race** — if pages
+   are missing, `app_file` in `README.md` front-matter is not `dashboard/app.py`
+   (Streamlit discovers `pages/` relative to the main script, so the entrypoint
+   must be `dashboard/app.py`, not a root wrapper).
 
 If the app shows a missing-artifact warning for a `.joblib` file, the Git LFS
 pointer was not resolved. Re-check `git lfs push --all origin main`.
@@ -118,16 +131,21 @@ pointer was not resolved. Re-check `git lfs push --all origin main`.
 ## SDK choice rationale
 
 **Streamlit SDK** (not Docker) was chosen because:
-1. HF Spaces natively understands Streamlit — just `app.py` + `requirements.txt`.
+1. HF Spaces natively understands Streamlit — `dashboard/app.py` + `requirements.txt`.
+   The `app_file: dashboard/app.py` front-matter in `README.md` points HF at the real
+   app; HF Spaces natively supports subdirectory entrypoints so no root wrapper is needed.
 2. No Dockerfile maintenance, no port binding, no CMD.
-3. The only non-standard requirement is the `--index-url` line for the CPU torch
+3. The only non-standard requirement is the `--extra-index-url` line for the CPU torch
    wheel, which pip handles fine in `requirements.txt`.
 4. The dashboard already runs correctly with `streamlit run`, so no adapter layer
    is needed.
 
 The CPU-only torch wheel (`torch==2.11.0+cpu`, ~240 MB) keeps the installed
-footprint reasonable. The `--index-url https://download.pytorch.org/whl/cpu`
-line in `requirements.txt` selects it. HF pip-installs this once and caches it.
+footprint reasonable. `requirements.txt` uses `--extra-index-url https://download.pytorch.org/whl/cpu`
+(not `--index-url`) so that PyPI remains available for non-torch packages — `--index-url`
+would replace PyPI entirely and cause streamlit, plotly, pandas etc. to fail to install.
+`torch==2.11.0+cpu` resolves only from the CPU index due to the `+cpu` local version specifier.
+HF pip-installs this once and caches it.
 
 ---
 
@@ -160,7 +178,7 @@ Render (https://render.com).
 - Render requires a `Procfile` or a `render.yaml`. A minimal `Procfile`:
 
   ```
-  web: streamlit run app.py --server.port=$PORT --server.headless=true
+  web: streamlit run dashboard/app.py --server.port=$PORT --server.headless=true
   ```
 
 - Models and data must be committed to the repo (or fetched via `render.yaml`
