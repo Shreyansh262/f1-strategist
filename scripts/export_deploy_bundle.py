@@ -195,7 +195,7 @@ sdk_version: "1.55.0"
 app_file: dashboard/app.py
 pinned: false
 license: mit
-short_description: Lap-time TFT · Tyre curves · MDP pit policy · Monte-Carlo engine
+short_description: TFT lap times · tyre curves · MDP pits · Monte-Carlo sim
 ---
 
 # F1 AI Race Strategist
@@ -247,6 +247,7 @@ scipy==1.17.1
 scikit-learn==1.8.0
 lightgbm==4.6.0
 joblib==1.5.3
+pandera==0.30.1  # needed at serve time — dashboard pages run validate_laps on raw parquet
 
 # CPU-only PyTorch — required for engine.py Monte-Carlo rollouts.
 # HF Spaces free tier has no GPU; this wheel is ~240 MB vs 900 MB CUDA build.
@@ -261,10 +262,19 @@ torch==2.11.0+cpu
 def main() -> None:
     print(f"Building deploy bundle at: {BUNDLE}")
 
-    # Wipe and recreate
+    # Wipe and recreate — but PRESERVE deploy_bundle/.git so the HF Spaces
+    # remote/LFS setup survives re-exports (update flow = re-export, then
+    # cd deploy_bundle && git add . && git commit && git push).
     if BUNDLE.exists():
-        shutil.rmtree(BUNDLE)
-    BUNDLE.mkdir(parents=True)
+        for child in BUNDLE.iterdir():
+            # .gitattributes holds the LFS tracking rules (parquet/joblib/png)
+            if child.name in (".git", ".gitattributes"):
+                continue
+            if child.is_dir():
+                shutil.rmtree(child)
+            else:
+                child.unlink()
+    BUNDLE.mkdir(parents=True, exist_ok=True)
 
     errors: list[str] = []
 

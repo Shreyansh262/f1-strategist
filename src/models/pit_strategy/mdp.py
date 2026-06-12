@@ -38,10 +38,6 @@ from pathlib import Path
 from typing import Final
 
 import joblib
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-from matplotlib.colors import ListedColormap
 import numpy as np
 import pandas as pd
 
@@ -203,6 +199,11 @@ _ACTION_COLORS = ["#E8E8E8", "#E8002D", "#FFC906", "#B0B0B0"]  # stay, S, M, H
 
 def plot_policy(result: dict, compound: str = "MEDIUM", used_two: int = 0) -> Path:
     """Heatmap of the optimal action over (lap, tyre age) for one compound."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.colors import ListedColormap
+
     ci = COMPOUNDS.index(compound)
     grid = result["policy"][1:, ci, :, used_two]          # [lap, age]
     fig, ax = plt.subplots(figsize=(10, 5))

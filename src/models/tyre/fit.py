@@ -50,16 +50,10 @@ from typing import Final
 os.environ.setdefault("MLFLOW_ALLOW_FILE_STORE", "true")
 
 import joblib
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-import mlflow
 import numpy as np
 import pandas as pd
 from scipy.optimize import curve_fit
 from scipy.stats import t as t_dist
-
-from src.models.lap_time.train_tft_data import load_tft_data, MLFLOW_TRACKING_URI
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(
@@ -297,6 +291,10 @@ def plot_degradation_curves(
     Default circuits = top 4 by lap volume within the era.
     Saved to reports/tyre/degradation_curves_era{era}.png
     """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
     era_laps = stint_laps[stint_laps["Era"] == era]
     if era_laps.empty:
         logger.warning("No laps for Era %d — skipping plot", era)
@@ -364,6 +362,9 @@ def plot_degradation_curves(
 
 def fit() -> pd.DataFrame:
     """Load data, fit all curves with pooling, save artifacts, log to MLflow."""
+    import mlflow
+    from src.models.lap_time.train_tft_data import load_tft_data, MLFLOW_TRACKING_URI
+
     df = load_tft_data()      # per-round glob + dedup + StintID/TrackStatus carry-back
     stint_laps = prepare_stint_laps(df)
     logger.info(

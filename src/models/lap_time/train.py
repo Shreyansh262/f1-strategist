@@ -28,8 +28,6 @@ os.environ.setdefault("MLFLOW_ALLOW_FILE_STORE", "true")
 
 import joblib
 import lightgbm as lgb
-import mlflow
-import mlflow.sklearn
 import optuna
 import pandas as pd
 from sklearn.compose import ColumnTransformer
@@ -44,7 +42,6 @@ from src.pipeline.features import (
     build_features,
     freeze_encoding_mappings,
 )
-from src.pipeline.splits import TRAIN_SEASONS, assert_no_leakage, make_splits
 from src.pipeline.validate import validate_laps
 
 logging.basicConfig(
@@ -147,6 +144,7 @@ def load_data(parquet_glob: str = "data/raw/*.parquet") -> pd.DataFrame:
     # Freeze circuit/team/driver mappings from the TRAIN seasons only (Section 5/6):
     # unseen 2025/2026 entrants (Audi, Cadillac, Racing Bulls, rookie drivers)
     # encode to the -1 sentinel — the same path a new entrant takes at serving time.
+    from src.pipeline.splits import TRAIN_SEASONS
     circuit_map, team_map, driver_map = freeze_encoding_mappings(
         validated_df[validated_df["Season"].isin(TRAIN_SEASONS)]
     )
@@ -271,6 +269,8 @@ def train_random_forest(
     Returns best model, its params, and its metrics.
     Raises ValueError if no configuration beats the baseline.
     """
+    import mlflow
+
     logger.info("--- Stage 2: Random Forest grid search (%d configs) ---",
                 len(RF_PARAM_GRID))
 
@@ -382,6 +382,7 @@ def train(parquet_glob: str = "data/raw/*.parquet") -> None:
         5. Save best models with joblib
     """
     # ---- data --------------------------------------------------------------
+    from src.pipeline.splits import assert_no_leakage, make_splits
     features_df = load_data(parquet_glob)
 
     train_df, val_df, test_df = make_splits(
@@ -398,6 +399,8 @@ def train(parquet_glob: str = "data/raw/*.parquet") -> None:
         logger.warning("Validation set is empty — fetch 2024 data to enable proper eval.")
 
     # ---- MLflow setup ------------------------------------------------------
+    import mlflow
+    import mlflow.sklearn
     mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
     mlflow.set_experiment(EXPERIMENT_NAME)
 
