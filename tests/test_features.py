@@ -337,8 +337,6 @@ class TestBuildFeatures:
         _ = build_features(df)
         assert df.shape == original_shape, "build_features must not mutate the input"
 
-# Add these imports at the top of test_features.py:
-
 
 class TestAddCircuitEncoding:
 

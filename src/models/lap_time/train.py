@@ -30,7 +30,6 @@ import joblib
 import lightgbm as lgb
 import mlflow
 import mlflow.sklearn
-import numpy as np
 import optuna
 import pandas as pd
 from sklearn.compose import ColumnTransformer
@@ -414,7 +413,7 @@ def train(parquet_glob: str = "data/raw/*.parquet") -> None:
         return float(mean_absolute_error(y_test, model.predict(X_test)))
 
     # ---- Stage 1: Bayesian Ridge ------------------------------------------
-    with mlflow.start_run(run_name="bayesian_ridge_baseline") as br_run:
+    with mlflow.start_run(run_name="bayesian_ridge_baseline"):
         mlflow.log_param("model_type", "BayesianRidge")
         mlflow.log_param("train_seasons", [2022, 2023, 2024])
         mlflow.log_param("val_seasons",   [2025])
@@ -433,7 +432,7 @@ def train(parquet_glob: str = "data/raw/*.parquet") -> None:
         baseline_val_mae = br_metrics["val_mae"]
 
     # ---- Stage 2: Random Forest -------------------------------------------
-    with mlflow.start_run(run_name="random_forest_grid_search") as rf_run:
+    with mlflow.start_run(run_name="random_forest_grid_search"):
         mlflow.log_param("model_type",    "RandomForestRegressor")
         mlflow.log_param("train_seasons", [2022, 2023, 2024])
         mlflow.log_param("val_seasons",   [2025])
@@ -453,7 +452,7 @@ def train(parquet_glob: str = "data/raw/*.parquet") -> None:
         mlflow.sklearn.log_model(rf_model, "random_forest")
 
     # ---- Stage 3: LightGBM + Optuna ---------------------------------------
-    with mlflow.start_run(run_name="lightgbm_optuna") as lgbm_run:
+    with mlflow.start_run(run_name="lightgbm_optuna"):
         mlflow.log_param("model_type",    "LGBMRegressor")
         mlflow.log_param("train_seasons", [2022, 2023, 2024])
         mlflow.log_param("val_seasons",   [2025])

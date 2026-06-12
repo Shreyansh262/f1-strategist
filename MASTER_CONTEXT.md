@@ -113,11 +113,12 @@ recalibrate.py and the TFT tests run locally; only training needs the Kaggle GPU
 Notes: pf 1.7.0 dropped `stop_randomization` → use `from_dataset(..., predict=True)` for val/test.
 mlflow 3.x blocks the file:// store unless `MLFLOW_ALLOW_FILE_STORE=true` (set in train_tft_data.py).
 
-**TO INSTALL later (only those NOT above):**
+**Phase 5 RL — INSTALLED (venv, 2026-06-12, CPU torch 2.11):**
 ```
-# RL STRETCH ONLY (do not install until Phase 5):
-stable-baselines3        # PPO/DQN for pit-strategy agent
-gymnasium                # RL environment API
+stable-baselines3==2.8.0   # PPO for the pit-strategy agent
+gymnasium==1.2.3           # RL environment API
+# tensorboard is OPTIONAL locally (train_ppo skips tb logging if absent);
+# the Kaggle notebook (08) pip-installs it for episode-reward curves.
 ```
 
 **RULE: Before any pip install, check this list. Only install what's NOT here. Update this list when something new is installed. Watch the torch / lightning / pytorch-forecasting version triangle — it breaks easily. The working combo is now pinned above — do not drift from it without re-running the quicktest.**
@@ -146,7 +147,7 @@ Ground truth for every file. New code must match. Do not rename columns or chang
 ### KEEP AS-IS (already solid — do not rewrite)
 - `src/pipeline/ingest.py` — **COMPLETE.** Output columns are law (Section 6). FastF1 cache enabled at module level. `session_type="R"` loads the Grand Prix, not the sprint.
 - `src/pipeline/validate.py` — **COMPLETE.** Filter order: TyreLife==1 out-laps → LapTimeSeconds in [70,130] → invalid/"None" Compound → sprint safety-net (mean>105s) → season whitelist → Pandera `lazy=True`. (v3.1: removed an accidental duplicate Pandera validation call.)
-- `tests/` — **COMPLETE: 50 tests passing locally** (test_features 44 incl. mapping-freeze contract, test_tyre 9, test_tft skips cleanly when lightning absent via `pytest.importorskip`).
+- `tests/` — **COMPLETE: 81 tests passing locally** (test_features 47, test_tyre 9, test_simulation 9, test_tft 6 — skips cleanly when lightning absent via `pytest.importorskip` — and test_rl_env 10 NEW 2026-06-12).
 - `conftest.py` — **COMPLETE.**
 
 ### `src/pipeline/features.py` — STATUS: COMPLETE (v3.2 — engine + driver features)
@@ -285,14 +286,31 @@ grid proxy = lap-1 cumulative order); writes reports/simulation/validation.{csv,
 Tests: `tests/test_simulation.py` (9: MDP rule/monotonicity/replay-consistency; engine
 ordering/probability-sum/seed/overtake-freeze/extra-stop-cost).
 
-### NEW — `src/models/pit_strategy/rl_agent.py` — STATUS: STRETCH (Phase 5, only after all else works)
-PPO/DQN trained inside the simulation engine (wrapped as a Gymnasium env). Compared head-to-head with the MDP. If it doesn't beat the MDP, that's a documented finding, not a failure.
+### NEW — `src/rl/env.py` — STATUS: DONE (2026-06-12, Phase 5 scaffold)
+Gymnasium RaceEnv: single-rollout per-lap transition. Obs = MDP state vector (norm lap, tyre age,
+compound one-hot, position, gap-ahead, laps-remaining, era) + last-3 lap-time deltas. Actions
+Discrete(4) = stay_out/pit SOFT/MEDIUM/HARD. Reward = −lap_time/1000 + terminal position bonus;
+two-compound rule = −5 terminal penalty. Imports engine.py constants/components (no magic-number
+duplication). Passes gymnasium env_checker.
 
-### NEW — `src/api/main.py` — STATUS: NOT STARTED (Phase 6)
-FastAPI. Endpoints in Section 12.
+### NEW — `src/rl/train_ppo.py` — STATUS: DONE (2026-06-12, Phase 5 scaffold)
+PPO trainer: MlpPolicy, SubprocVecEnv, checkpoints every 500k → models/rl/. Ready for Kaggle.
 
-### NEW — `dashboard/` — STATUS: NOT STARTED (Phase 6)
-Streamlit multi-page app. Pages in Section 12. Existing HTML artifact becomes the static showcase landing page.
+### NEW — `src/rl/evaluate_rl.py` — STATUS: DONE (2026-06-12, Phase 5 scaffold)
+Paired common-seed PPO-vs-MDP rollouts → reports/rl/ppo_vs_mdp.csv. Head-to-head comparison.
+
+### NEW — `scripts/export_deploy_bundle.py` — STATUS: DONE (2026-06-12, Phase 7)
+Idempotent bundle builder: 2.41 MB total (data, models, thin src, reports, dashboard). HF Spaces
+route with streamlit sdk. DEPLOY.md with 4-step instructions. Smoke-verified. Output is gitignored.
+
+### NEW — `DEPLOY.md` — STATUS: DONE (2026-06-12, Phase 7)
+4-step user instructions: create Space → run export → push → verify. (The HF YAML front-matter lives in the bundle's generated README.md, not here.)
+
+### NEW — `src/api/main.py` — STATUS: DONE (2026-06-12, Phase 6)
+FastAPI (~500 lines): GET /health, POST /predict/lap-time (frozen-mapping features, ±σ interval from recalibrated TFT band), GET /tyre/degradation/{circuit}/{compound}, POST /simulate/race (n_rollouts capped 5000), POST /predict/strategy. Artifacts load once in lifespan; missing artifact → /health reports it, endpoint 503 (fail-soft). TFT optional behind ENABLE_TFT=1 with late import — pytorch-forecasting NOT required to serve. All endpoints live-tested.
+
+### NEW — `dashboard/` — STATUS: DONE (2026-06-12, Phase 6)
+Streamlit multi-page app: app.py (Overview — real KPIs from reports/), pages/1_Pre_Race.py (tyre curves + CI ribbons, strategy candidates ranked by win-prob, MDP heatmap), pages/2_Live_Replay.py (lap slider, gap chart, stint timeline, actual-vs-predicted with calibration band, pit alerts), pages/3_Post_Race.py (per-driver MAE bars, actual-vs-sim audit, deg scatter vs curve, error spikes vs TrackStatus). Theme: carbon dark, F1 red, Titillium Web, compound colors. Launch: `venv\Scripts\python.exe -m streamlit run dashboard/app.py`. Dashboard imports src/ directly — does NOT call the API. Verified via Streamlit AppTest (all pages clean) + real 2025 race replay. Existing HTML artifact becomes the static showcase landing page.
 
 ---
 
@@ -422,19 +440,24 @@ v3 PHASES (no fixed weeks — quality first, sprint pace):
                 materialize at convergence). Recalibrated: shifts era0 +0.052 / era1 +0.153
                 (vs v1's +0.868 — conformal now a trim, not a rescue), coverage 0.787/0.813.
                 Sim validation re-run: 0.79->0.81 overall (Bahrain 0.53->0.58, still SC-gap).
-                evaluate.py + demo re-run, 71 tests green, model cards updated.
+                evaluate.py + demo re-run, 81 tests green, model cards updated.
                 v1 archived: tft_v1_artifacts_backup.zip. Sweep CSVs in reports/lap_time/.
-  [ ] Phase 5 — STRETCH: RL pit agent in the simulator, vs MDP. Only if dashboard not more
-                valuable; Section 10.5. (~10 Kaggle GPU hrs)
-  [ ] Phase 6 — FastAPI + Streamlit dashboard + HTML showcase page. Section 10.6.
-  [ ] Phase 7 — Deploy (light host), technical report, final cross-era evaluation. Section 10.7.
+  [x] Phase 6 — DONE (2026-06-12): FastAPI + Streamlit dashboard + HTML showcase page.
+                src/api/main.py (~500 lines), dashboard/ (app.py + 3 pages), all endpoints
+                live-tested, theme complete. Section 10.6 playbook executed.
+  [~] Phase 5 — SCAFFOLDED (2026-06-12), training PENDING: RL pit agent in simulator, vs MDP.
+                src/rl/env.py + train_ppo.py + evaluate_rl.py + tests done; notebooks/08_rl_ppo.ipynb
+                ready for Kaggle (T4 x2, ~8-10h, 3 seeds × 3M steps). User runs Kaggle.
+  [~] Phase 7 — BUNDLE READY (2026-06-12), push PENDING: deploy_bundle/ (2.41 MB, data+models+
+                thin src+dashboard), DEPLOY.md with 4-step instructions, .streamlit/config.toml.
+                export_deploy_bundle.py idempotent. HF Spaces route: streamlit SDK. User pushes to HF.
 ```
 
 ---
 
 ## 9. Current blockers / next actions
 
-**Phases 0–4 DONE and validated** (see tracker). 71 tests passing locally.
+**Phases 0–4 DONE and validated** (see tracker). **81 tests passing locally** (10 new RL env tests added 2026-06-12).
 
 **TFT v2 DONE (2026-06-11): ran, did not beat v1, v1 kept.** Adding Driver+EngineMaker static
 categoricals left val green flat (1.12→1.14) and degraded cross-era test green 1.62→1.94 — the
@@ -445,12 +468,21 @@ v2 re-run is the clean tiebreak if a Kaggle slot frees up (optional, low priorit
 
 **TFT HPO DONE — v3 deployed (2026-06-11, Section 8 tracker entry has the full numbers).**
 Headline: swept v2-features h64 model, val green 1.02 / test green 1.56 (v1: 1.12/1.62) —
-cross-era improved too. Recalibration + sim validation (0.81) + evaluate.py + 71 tests all re-run
+cross-era improved too. Recalibration + sim validation (0.81) + evaluate.py + 81 tests all re-run
 locally. Phases 0-4 now closed in best-known form: every model either swept (TFT, LightGBM/Optuna)
 or convergence-confirmed; no further training pending.
 
-**NEXT (user action): choose Phase 6 (dashboard — recommended next, biggest portfolio visual)
-or Phase 5 (RL stretch, ~10 Kaggle GPU hrs).** Playbooks: Sections 10.5 / 10.6.
+**Phase 6 DONE (2026-06-12):** FastAPI + Streamlit dashboard built, tested, verified. All
+endpoints live-tested; dashboard pages (Pre-Race / Live-Replay / Post-Race) verified via
+Streamlit AppTest + real 2025 race replay. Theme complete, launch command documented in TUTOR.md.
+
+**Phases 5 & 7 UNCOMMITTED (2026-06-12):** Phase 5 (RL env + training scaffold) ready for user
+to run Kaggle notebook. Phase 7 (deploy bundle + HF Spaces route) ready for user to push per
+DEPLOY.md instructions.
+
+**NEXT (user action): commit the Phase 5/6/7 work (git add src/api/ src/rl/ dashboard/ scripts/export_deploy_bundle.py DEPLOY.md TUTOR.md
+and any model/test updates); run notebooks/08_rl_ppo.ipynb on Kaggle (T4 x2, ~8-10h, 3 seeds × 3M);
+push deploy_bundle/ to HF Spaces per DEPLOY.md; screenshot dashboard for README.**
 Optional residuals (not blockers, document-only): SC hazard in the sim (Bahrain coverage gap),
 street-circuit MAE spread, 6-race test-set noise.
 
@@ -582,28 +614,51 @@ ranks them. This composition (MDP proposes, sim disposes) is the line for the wr
 2026 races → `reports/simulation/strategy_tables/`.
 
 ### 10.5 Phase 5 — RL pit agent (STRETCH; Kaggle ~10h)
-Only start if 3.5 + 4a + 4b are merged and validated. `pip install stable-baselines3 gymnasium`
-(Section 3 ordering). Wrap the engine as a Gymnasium env (single ego driver, others on fixed
-strategies; obs = MDP state vector + recent lap deltas; action = MDP action set; reward =
-−race_time/1000 + position bonus at terminal). PPO, 2–5M steps, 3 seeds; checkpoint every 500k.
-Compare to the MDP policy in the SAME sim (paired rollouts, same seeds). **A documented "RL
-matched but didn't beat the MDP" is a legitimate result** — write it up either way.
+**STATUS: SCAFFOLDED (2026-06-12), training PENDING.** `src/rl/env.py` (Gymnasium RaceEnv,
+per-lap obs = norm lap + tyre age + compound one-hot + position + gap-ahead + laps-remaining + era
++ last-3 lap deltas; actions Discrete(4) = stay_out/pit SOFT/MEDIUM/HARD; reward −lap_time/1000
++ terminal position bonus); `src/rl/train_ppo.py` (PPO MlpPolicy, SubprocVecEnv, 500k checkpoints);
+`src/rl/evaluate_rl.py` (paired PPO-vs-MDP); `tests/test_rl_env.py` (10 tests, all green);
+`notebooks/08_rl_ppo.ipynb` ready for Kaggle (T4 x2, 3 seeds × 3M steps default, n_envs=8; CPU-bound,
+~8-10h expected). Design: imports engine.py constants/components (no magic-number duplication);
+two-compound rule = −5 terminal penalty; smoke-tested locally then artifacts removed. User runs
+the Kaggle notebook. Compare to the MDP policy in the SAME sim (paired rollouts, same seeds).
+**A documented "RL matched but didn't beat the MDP" is a legitimate result** — write it up either way.
 
 ### 10.6 Phase 6 — API + dashboard (LOCAL CPU, ~2–3 days)
-FastAPI (`src/api/main.py`): endpoints exactly as Section 12; pydantic request/response models;
-all models loaded once at startup from `models/` (joblib + tyre curves + calibration json; TFT
-optional behind a feature flag since serving may lack pf). Streamlit (`dashboard/app.py` +
-`pages/`): Pre-Race / Live-Replay / Post-Race as Section 12; replay mode reads historical
-parquet — NO live-timing dependency. Visual bar: dark theme, F1-style red/white accents, the
-MDP policy heatmap, sim win-probability distributions as horizontal stacked bars, tyre curves
-with CI ribbons. Screenshot everything for the README.
+**STATUS: DONE (2026-06-12).** FastAPI (`src/api/main.py`, ~500 lines): GET /health, POST
+/predict/lap-time (frozen-mapping features, ±σ interval from recalibrated TFT band),
+GET /tyre/degradation/{circuit}/{compound}, POST /simulate/race (n_rollouts capped 5000),
+POST /predict/strategy. Pydantic models. Artifacts load once in lifespan; missing → /health
+reports, endpoint 503 fail-soft. TFT optional behind ENABLE_TFT=1 with late import — pytorch-
+forecasting NOT required to serve. All endpoints live-tested. Streamlit (`dashboard/app.py` +
+`pages/{1_Pre_Race.py, 2_Live_Replay.py, 3_Post_Race.py}`): Overview (real KPIs from reports/),
+Pre-Race (tyre curves + CI ribbons, strategy candidates ranked by win-prob, MDP heatmap in
+Plotly), Live-Replay (lap slider, gap chart, stint timeline colored by compound, actual-vs-
+predicted with calibration band, pit-window alerts; historical parquet only, no live timing),
+Post-Race (per-driver MAE bars, actual-strategy-vs-sim audit, deg scatter vs fitted curve, error
+spikes vs TrackStatus). Theme: carbon dark (#0E0E10/#15151E), F1 red (#E10600), Titillium Web,
+real compound colors. Config: repo-root .streamlit/config.toml (launch from root) + duplicate in
+dashboard/.streamlit/. Launch: `venv\Scripts\python.exe -m streamlit run dashboard/app.py`.
+Dashboard imports src/ directly — does NOT call the API. Verified via Streamlit AppTest (all
+pages clean) + real 2025 race through the page code path. TUTOR.md Section 14 added: plain-
+language guide (what each page is for, launch command, demo script).
 
 ### 10.7 Phase 7 — Deploy + write-up (~2 days)
-Bundle: small curated data subset + CPU artifacts into the image (models/ and data/ are
-gitignored — this is the known gap, solve it HERE). HF Spaces preferred over Render (RAM).
-Re-ingest all 2026 races run by then; final cross-era eval; update every number in README +
-model cards. 3–5 page technical report PDF: problem → architecture → honest results →
-limitations → what-I'd-do-differently. Record a 2-min demo video/GIF of the dashboard.
+**STATUS: BUNDLE READY (2026-06-12), push PENDING.** `scripts/export_deploy_bundle.py`: idempotent,
+builds deploy_bundle/ = 2.41 MB total (data 1.20 MB: 2025 per-round + 2026 parquets + laps_2025_full
++ mappings + pit_loss.json; models 955 KB: chosen_lap.joblib + tyre_curves.joblib + tft_
+calibration.json — TFT checkpoint excluded, engine samples distributional summaries; reports CSVs
+129 KB; curated src/ 101 KB excluding ingest/train_tft/recalibrate/evaluate/api; dashboard 52 KB).
+Solves the "models/ and data/ are gitignored" deploy gap. HF Spaces route: streamlit sdk (not
+Docker). Bundle contains README.md with HF YAML front-matter, requirements-deploy.txt (8 packages
++ torch CPU), thin root app.py sys.path wrapper, .streamlit/config.toml. DEPLOY.md at repo root:
+4-step instructions (create Space → run export → push → verify). Smoke-verified: dashboard
+launched from inside deploy_bundle/, HTTP 200, sim ran. deploy_bundle/ is generated output —
+gitignored, not committed. User action: push bundle to HF per DEPLOY.md. After deploy, re-ingest
+all 2026 races run by then; final cross-era eval; update every number in README + model cards.
+3–5 page technical report PDF: problem → architecture → honest results → limitations → what-I'd-
+do-differently. Record a 2-min demo GIF of the dashboard.
 
 ---
 

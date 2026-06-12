@@ -249,3 +249,70 @@ A: Training and serving are separate. Everything serves on CPU — the TFT expor
 - **Common random numbers** — same seed across compared alternatives so the difference is the treatment, not noise.
 - **Leave-one-race-out pace** — driver pace estimated from all *other* races of the season, so a replayed race never informs its own simulation.
 - **Pool level** — which hierarchy level a tyre cell's curve was fit at (circuit / era / compound).
+
+---
+
+## 14. The Dashboard — what it is and how to use it (plain words)
+
+**What it is, in a sentence:** A web app that lets you watch the model's predictions unfold — before a race, during a replay, or after the fact — instead of just reading numbers on a screen.
+
+**How to launch it:**
+
+Open a terminal in the project folder and run:
+```
+venv\Scripts\python.exe -m streamlit run dashboard/app.py
+```
+Your browser opens automatically. All the screens are listed in the left sidebar.
+
+**The 4 screens:**
+
+**1. Overview — your 30-second pitch**
+
+This is the front door. You see four big numbers at the top:
+- How accurate the lap-time model is (green flag) and how much worse on a regulation change (2025 vs 2026).
+- How many races of real data went into training.
+- How many simulations validate the model when you replay past races (81% of drivers' actual finishes fell where the model predicted).
+
+Use this page when you want to show someone the project for the first time. It answers "does this actually work?" in one screen.
+
+**2. Pre-Race — play strategist before the flag drops**
+
+Pick a track from the dropdown, pick which drivers are on the grid, then hit the button to load the sim.
+
+You see two things:
+- A graph for each tyre type (soft/medium/hard) showing how lap-time changes as the tyre ages. The curves have shaded bands — that's the model's uncertainty. Real data from 100+ stints teaches the shape.
+- Below that, a section to input strategy ideas: "stop once on lap 28" or "stop twice (lap 15 and 35)" etc. For each plan you enter, the app runs 1000+ simulated races in the background and shows you which plan wins most often as a percentage bar.
+- A colored grid underneath: one row per lap, one column per tyre age. Green means "stay out", red means "pit now" according to the exact optimizer. Hover to see the math.
+
+This is the page for "what if?" questions. It's how you'd brief a driver before a weekend.
+
+**3. Live Replay — rewatch a real race with the model's brain on screen**
+
+Pick a season and a race from the dropdowns. Drag the lap slider to step through the race lap by lap.
+
+For each lap you see:
+- Who's leading and by how much (the grid updates as overtakes happen).
+- What tyre each driver is on and how old it is.
+- A dotted line showing what the model *predicted* the leader would do that lap, vs what he actually did (the solid line). When these disagree by a lot, you see a tooltip explaining why (traffic, an aggressive management choice, a safety car).
+- Red boxes around drivers whose tyres are entering the "danger zone" — the model knows they're about to fall off a cliff.
+
+This page answers: "how close were the predictions that day?" and "did the model catch the right moments when the race changed?"
+
+**4. Post-Race — the report card**
+
+Pick a finished race and see:
+- A table showing how far off the prediction was for each driver across the whole race (actual gap vs predicted gap).
+- A comparison: "if the winner had used a different pit strategy, would they still have won?" (what the model recommends vs what actually happened).
+- How well the tyre degradation model nailed the shape of the race (did tyres wear like we expected?).
+- Which individual laps had big errors — almost always the safety-car laps, because you can't predict a crash.
+
+This page is for learning: when did the model miss and why? It builds confidence in what you *should* trust it on.
+
+**What to do with it (checklist):**
+
+1. **Run it and explore.** Click through all 4 pages once so it feels familiar.
+2. **Build a demo story.** A good interview pitch is: Overview (30 sec) → Pre-Race on Bahrain (1 min, enter a couple of strategy ideas) → Replay a 2025 race (1 min, drag the slider) → Post-Race (30 sec, look at where the model was right and wrong). That's your 3–4 minute proof.
+3. **Take screenshots** of each page. Phase 7 needs them for the README.
+4. **Watch for red warning panels.** If a page shows red text, it means a model file or data file is missing — the page tells you which. Nothing is "broken"; the warning just identifies what you need to download. (See the README for artifact links.)
+
+The dashboard is read-only — it can't change any real data. It's your own personal race engineer, always available to ask "what if?"

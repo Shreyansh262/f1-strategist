@@ -17,7 +17,6 @@ Run after train.py has completed:
 
 import logging
 import os
-from pathlib import Path
 
 # mlflow 3.x blocks the local file:// store unless opted in (Errors log #13).
 os.environ.setdefault("MLFLOW_ALLOW_FILE_STORE", "true")
@@ -28,7 +27,6 @@ import mlflow
 import numpy as np
 import pandas as pd
 import shap
-from sklearn.metrics import mean_absolute_error
 from sklearn.model_selection import learning_curve
 
 from src.pipeline.features import (

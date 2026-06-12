@@ -5,7 +5,6 @@ Outputs a clean DataFrame saved to data/raw/.
 """
 
 import logging
-import os
 from pathlib import Path
 
 import fastf1

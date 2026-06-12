@@ -13,7 +13,6 @@ Usage:
 import logging
 
 import pandas as pd
-import pandera as pa
 from pandera import Column, DataFrameSchema, Check
 
 logger = logging.getLogger(__name__)
@@ -134,8 +133,7 @@ def validate_laps(df: pd.DataFrame) -> pd.DataFrame:
         logger.info("Removed %d pit out-laps (TyreLife == 1)", n_filtered)
 
     # --- filter extreme lap times -------------------------------------------
-    # Belt-and-suspenders: ingest.py may already filter, but validate again
-    # filter extreme lap times
+    # Belt-and-suspenders: ingest.py may already filter, but validate again.
     mask_time = df["LapTimeSeconds"].between(LAP_TIME_MIN, LAP_TIME_MAX)
     n_time = (~mask_time).sum()
     if n_time > 0:
@@ -143,7 +141,7 @@ def validate_laps(df: pd.DataFrame) -> pd.DataFrame:
                    n_time, LAP_TIME_MIN, LAP_TIME_MAX)
     df = df[mask_time].copy()
 
-    # ADD THIS — drop laps with null compound
+    # --- drop laps with invalid/null compound -------------------------------
     mask_compound = df["Compound"].isna() | (df["Compound"] == "None") | (~df["Compound"].isin(VALID_COMPOUNDS))
     n_bad_compound = mask_compound.sum()
     if n_bad_compound > 0:
@@ -156,7 +154,8 @@ def validate_laps(df: pd.DataFrame) -> pd.DataFrame:
     if n_sprint > 0:
         logger.warning("Dropping %d laps from sprint races (mean lap time > 105s)", n_sprint)
     df = df[race_mean <= 105].copy()
-# --- filter unsupported seasons -------------------------------------------
+
+    # --- filter unsupported seasons -----------------------------------------
     SUPPORTED_SEASONS = {2022, 2023, 2024, 2025, 2026}
     n_season = (~df["Season"].isin(SUPPORTED_SEASONS)).sum()
     if n_season > 0:
