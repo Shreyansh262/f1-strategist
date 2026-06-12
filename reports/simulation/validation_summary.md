@@ -1,10 +1,10 @@
 # Simulation validation — historical replay
 Engine v1 (no safety-car model). N=2000 rollouts/race, seed fixed.
-**Overall: 0.79 of drivers' actual finishing positions fall inside their central-80% simulated band** (target ≈ 0.80).
+**Overall: 0.81 of drivers' actual finishing positions fall inside their central-80% simulated band** (target ≈ 0.80).
 
 | Circuit | coverage |
 |---|---|
-| Bahrain Grand Prix | 0.53 |
+| Bahrain Grand Prix | 0.58 |
 | Hungarian Grand Prix | 0.78 |
 | Japanese Grand Prix | 1.00 |
 | Monaco Grand Prix | 1.00 |

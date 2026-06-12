@@ -24,13 +24,13 @@ Replayed 4 contrasting 2025 races with the drivers' **actual strategies** and le
 
 | Race (2025) | drivers | central-80% coverage |
 |---|---|---|
-| Bahrain | 19 | 0.53 |
+| Bahrain | 19 | 0.58 |
 | Japan | 19 | 1.00 |
 | Hungary | 9 | 0.78 |
 | Monaco | 5 | 1.00 |
-| **Overall** | **52** | **0.79 (target 0.80)** |
+| **Overall** | **52** | **0.81 (target 0.80)** |
 
-Read honestly: aggregate coverage is on target, but Bahrain misses badly — reality included dynamics (SC phases, first-lap incidents) the v1 engine deliberately excludes. Monaco/Hungary have few full-distance finishers (attrition), so their 1.00/0.78 are thin samples. Full table: `reports/simulation/validation.csv`.
+(Numbers are with the swept v3 TFT bands, 2026-06-11; the v1-band run scored 0.79 overall, Bahrain 0.53.) Read honestly: aggregate coverage is on target, but Bahrain misses badly — reality included dynamics (SC phases, first-lap incidents) the v1 engine deliberately excludes. Monaco/Hungary have few full-distance finishers (attrition), so their 1.00/0.78 are thin samples. Full table: `reports/simulation/validation.csv`.
 
 ## MDP results (sanity vs racing reality)
 Bahrain: 2-stop (matches the classic 2–3 stop race). Spain: 2-stop. Monaco: 1-stop (matches). Japan (2026): 1-stop. **Known artifact:** at Monaco the MDP pits on the *final lap* to satisfy the two-compound rule at minimum cost — legal and optimal in a deterministic, rival-free world, absurd under real SC risk. Kept deliberately: it is the cleanest demonstration of why the probabilistic simulation layer must sit on top of the MDP.

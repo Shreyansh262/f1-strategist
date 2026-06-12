@@ -1,4 +1,4 @@
 strategy,start,stops,win_prob,podium_prob,mean_finish,p50_time_s
-2-stop M->H->H,MEDIUM,"[(17, 'HARD'), (37, 'HARD')]",0.7725,0.9895,1.278,5235.921875
-2-stop S->H->M,SOFT,"[(13, 'HARD'), (35, 'MEDIUM')]",0.6835,0.9865,1.4,5247.5634765625
-1-stop M->H (L28),MEDIUM,"[(28, 'HARD')]",0.673,0.977,1.4395,5242.57421875
+2-stop M->H->H,MEDIUM,"[(17, 'HARD'), (37, 'HARD')]",0.772,0.99,1.2765,5235.939453125
+2-stop S->H->M,SOFT,"[(13, 'HARD'), (35, 'MEDIUM')]",0.6755,0.9875,1.406,5247.490234375
+1-stop M->H (L28),MEDIUM,"[(28, 'HARD')]",0.664,0.9835,1.442,5242.77783203125

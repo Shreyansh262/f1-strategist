@@ -16,7 +16,7 @@ Every section below unpacks one clause of that paragraph.
 
 **Source:** FastF1 (public F1 timing data), race sessions only, 2022–2026. ~104K laps after validation. Stored as one parquet per race round (`data/raw/laps_YYYY_rNN.parquet`).
 
-**Key insight that shaped everything: data is the constraint, not compute.** F1 produces a few hundred thousand usable laps *total*. A bigger GPU does not justify a bigger model — it justifies the *right* model trained quickly, plus compute-hungry simulation. This is why the TFT has only ~86K parameters (hidden_size 32) and why the interview answer to "why not a giant transformer?" is "because the data is small and a giant model would memorize it."
+**Key insight that shaped everything: data is the constraint, not compute.** F1 produces a few hundred thousand usable laps *total*. A bigger GPU does not justify a bigger model — it justifies the *right* model trained quickly, plus compute-hungry simulation. This is why the TFT is small — and the claim is now *measured*, not asserted: the hyperparameter sweep showed hidden_size 64 (~322K params) wins, while 96 and 128 overfit and score worse. The interview answer to "why not a giant transformer?" is "I swept the size axis — the data ceiling shows up at ~322K parameters."
 
 **The 2026 regulation change is the project's spine.** New aero, new power units, three new teams (Audi, Cadillac, Racing Bulls rebrand lineage). It gives a natural, *honest* generalization test: train on 2022–24, validate on 2025, test on 2026 — a real distribution shift, not a random split. Almost every design choice below exists to handle, measure, or exploit this boundary.
 
@@ -73,11 +73,11 @@ Evaluation always reports: per-circuit MAE (aggregates hide circuit failures), p
 
 ## 4. The Temporal Fusion Transformer — the thesis model
 
-**The thesis: laps within a stint are a sequence, not independent rows.** A tree sees `TyreLife=15` as a static number. The TFT's encoder consumes the stint's *actual past lap times* — it watches *this* car's degradation unfolding *today* and extrapolates one lap forward. That information is 100% available at prediction time (the laps already happened), so it's legitimate autoregression, not leakage. This single difference is why the TFT halves LightGBM's error (green 1.12 vs 2.14 val).
+**The thesis: laps within a stint are a sequence, not independent rows.** A tree sees `TyreLife=15` as a static number. The TFT's encoder consumes the stint's *actual past lap times* — it watches *this* car's degradation unfolding *today* and extrapolates one lap forward. That information is 100% available at prediction time (the laps already happened), so it's legitimate autoregression, not leakage. This single difference is why the TFT halves LightGBM's error (green 1.02 vs 2.14 val, after the sweep).
 
 **Setup specifics that matter:**
 - Sequence unit = stint: `GroupID = Season_Round_Driver_StintID`, `time_idx` = lap-in-stint. Encoder ≤12 laps, decoder = 1 lap ahead.
-- **Static categoricals** (constant per stint): `CircuitKey`, `Team`, `EraStr`, `CompoundStr` — raw *strings* with `NaNLabelEncoder(add_nan=True)` (the library owns cardinalities; unseen → NaN class ≈ the −1 sentinel). v2 adds `Driver` + `EngineMaker`.
+- **Static categoricals** (constant per stint): `CircuitKey`, `Team`, `EraStr`, `CompoundStr`, `Driver`, `EngineMaker` (the last two added by the swept v3 — they looked harmful in the undertrained v2 run, then won once converged at hidden 64) — raw *strings* with `NaNLabelEncoder(add_nan=True)` (the library owns cardinalities; unseen → NaN class ≈ the −1 sentinel).
 - **Known-future reals** (the model may use the predicted lap's value): `time_idx`, `NormLapNumber`, `FuelLoad`, `TyreLife` — all deterministic given the lap number. **Observed reals** (past only): `TrackTemp`, `AirTemp`, and the target itself.
 - **Quantile loss** at 0.1/0.5/0.9 → native prediction intervals, which the simulation engine needs. This is why a TFT and not, say, a plain LSTM with MSE.
 - ~86K parameters. Right-sized to the data, deliberately.
@@ -99,7 +99,7 @@ Evaluation always reports: per-circuit MAE (aggregates hide circuit failures), p
 
 **The two implementation decisions that make it defensible:**
 1. **Calibration and evaluation never share laps.** Era 0: calibrate on odd 2025 rounds, report coverage on even rounds. Era 1: calibrate on 2026 R1, report on R2–R6 (R1 is sacrificed from coverage reporting and we say so). Scoring coverage on the data you calibrated on is circular — the guarantee makes it trivially true.
-2. **Green-flag laps only.** First attempt calibrated on all laps; 2026 R1 was safety-car-heavy, the SC laps' +20–40s errors landed in the score tail, and the shift exploded to 8.4s (a 20.7s-wide band that "covers" by being useless). The sim samples *green racing pace* from these bands, so green is the right target distribution. Result after fix: era-0 shift +0.082s → coverage **0.800 exactly**; era-1 shift +0.868s → 0.879 (overshoot from a one-race calibration set — conservative, the safe direction for decision-making).
+2. **Green-flag laps only.** First attempt calibrated on all laps; 2026 R1 was safety-car-heavy, the SC laps' +20–40s errors landed in the score tail, and the shift exploded to 8.4s (a 20.7s-wide band that "covers" by being useless). The sim samples *green racing pace* from these bands, so green is the right target distribution. Result after fix (swept v3 model): era-0 shift +0.052s → coverage **0.787**; era-1 shift +0.153s → **0.813** — both inside the success window. (The v1 model needed +0.868s on era 1; the swept model generalizes well enough that conformal became a trim instead of a rescue — itself a talking point.)
 
 Output: `models/tft_calibration.json` — two numbers the engine reads to widen its sampling σ.
 
@@ -169,7 +169,7 @@ Note the tyre draw is per-*stint*, not per-lap: a tyre that degrades fast degrad
 
 **The engine and the MDP agree independently:** the MDP's optimal Bahrain 2-stop ((17,H),(37,H)) also tops the sim's recommendation table (win prob 0.772 vs 0.673 for the 1-stop). Two different formalisms, same answer — that's mutual validation.
 
-**Historical-replay validation (the credibility step):** for 4 contrasting 2025 races, take the drivers' *actual* strategies, estimate each driver's pace **leave-one-race-out** (their green-median delta vs the field, averaged over the season's *other* races — this race's laps never inform its own sim, except the field-median anchor for track conditions), simulate 2000 rollouts, and check where the actual finish falls in each driver's simulated distribution. Result: **79% of 52 drivers inside their central-80% band (target 80%)**. Japan 1.00, Hungary 0.78, Monaco 1.00, Bahrain 0.53 — the Bahrain miss is SC contamination, which the v1 engine deliberately excludes (top of the v2 list, to be added with its own ablation).
+**Historical-replay validation (the credibility step):** for 4 contrasting 2025 races, take the drivers' *actual* strategies, estimate each driver's pace **leave-one-race-out** (their green-median delta vs the field, averaged over the season's *other* races — this race's laps never inform its own sim, except the field-median anchor for track conditions), simulate 2000 rollouts, and check where the actual finish falls in each driver's simulated distribution. Result: **81% of 52 drivers inside their central-80% band (target 80%)**. Japan 1.00, Hungary 0.78, Monaco 1.00, Bahrain 0.58 — the Bahrain miss is SC contamination, which the v1 engine deliberately excludes (top of the v2 list, to be added with its own ablation).
 
 ---
 
@@ -216,7 +216,7 @@ A: LightGBM is my model-to-beat and I report it honestly — it's excellent on t
 A: No — those laps have already happened when the prediction is made. The decoder never sees the target lap's own time. It's autoregression, the same information a race engineer has on the pit wall. The leakage discipline is elsewhere: season splits, train-frozen encodings, every feature knowable pre-lap.
 
 **Q: How do you know your uncertainty is real?**
-A: I measured it — coverage of the 0.1–0.9 band was 0.75 in-era and 0.66 cross-era against 0.80 nominal, i.e. overconfident. I fixed it with era-aware split-conformal widening, calibrated on rounds disjoint from the rounds I score coverage on, green-flag laps only. Era-0 coverage landed on 0.800 exactly. The sim samples from the *recalibrated* bands.
+A: I measured it — raw coverage of the 0.1–0.9 band was 0.72 in-era and 0.67 cross-era against 0.80 nominal, i.e. overconfident (a sharper median means narrower raw bands). I fixed it with era-aware split-conformal widening, calibrated on rounds disjoint from the rounds I score coverage on, green-flag laps only. Coverage landed at 0.787 / 0.813 with shifts of just +0.05s / +0.15s. The sim samples from the *recalibrated* bands.
 
 **Q: Your tyre model r² is 0.15. Isn't that bad?**
 A: r² there measures per-lap noise — traffic, management, track evolution — which the curve is not supposed to explain. The questions that matter are: are b and c well-determined (yes where data is rich — Bahrain HARD 0.075±0.013), are they physically ordered (yes — hard < medium wear, soft has the biggest cliff), and do the CIs widen honestly where data is thin (yes — 2026 cells pool to era level by design).
@@ -225,7 +225,7 @@ A: r² there measures per-lap noise — traffic, management, track evolution —
 A: The composition. The MDP is exact and interpretable but deterministic and single-car — at Monaco it "optimally" pits on the final lap, which is absurd under safety-car risk. The Monte Carlo engine fixes exactly that class of error by sampling from measured uncertainty. MDP proposes, sim disposes — and at Bahrain they independently agree on the same 2-stop.
 
 **Q: Biggest weakness?**
-A: No safety-car model — it's why Bahrain validation coverage is 0.53 while overall is 0.79, and the first thing I'd add (as a per-circuit Poisson hazard, ablated separately). No live telemetry: tyre temps, fuel flow, ERS, 2026 active-aero state. And the 2026 test set is six races — every cross-era number carries that small-sample caveat.
+A: No safety-car model — it's why Bahrain validation coverage is 0.58 while overall is 0.81, and the first thing I'd add (as a per-circuit Poisson hazard, ablated separately). No live telemetry: tyre temps, fuel flow, ERS, 2026 active-aero state. And the 2026 test set is six races — every cross-era number carries that small-sample caveat.
 
 **Q: What did the driver-feature experiment teach you?**
 A: Three things. Driver skill is real signal (SHAP 0.32). Driver and team are not separately identifiable from this data — driver is nested in team per season, and SHAP credit just moved between them. And in-era gains can cost cross-era generalization (val improved, test degraded, because drivers switch teams over the boundary) — which I report as an ablation instead of silently picking whichever looked better on test, because choosing features on the test set invalidates it.

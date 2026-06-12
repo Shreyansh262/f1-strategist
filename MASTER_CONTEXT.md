@@ -411,6 +411,19 @@ v3 PHASES (no fixed weeks — quality first, sprint pace):
                 20 epochs (v1 ~26) → "no improvement", not clean causal proof. v1 artifacts
                 restored from tft_artifacts.zip + git (recalibration); v2 archived in
                 tft_v2_artifacts.zip. evaluate.py re-run, pytest 71 green.
+  [x] TFT HPO rounds 1+2 (2026-06-11, notebooks 06+07, ~2h T4 total) — v3 DEPLOYED.
+                Round 1 (v1 features): best h64 1.1239 vs v1 1.12 = tie, v1 config confirmed
+                near-optimal for v1 features; BUT converged v2-features tiebreak hit 1.083 —
+                the old v2 "failure" was undertraining + h32 capacity, not the features.
+                Round 2 (all v2 features, patience 10): h64 WINS at 1.0226 val green
+                (h96 1.185 / h128 1.139 overfit; enc24 1.150 < enc12). Deployed v3 =
+                h64/d0.20/lr1e-3/enc12, 22 epochs, ~322K params. val green 1.12->1.02,
+                test green 1.62->1.56 — CROSS-ERA IMPROVED TOO (driver-as-proxy fear didn't
+                materialize at convergence). Recalibrated: shifts era0 +0.052 / era1 +0.153
+                (vs v1's +0.868 — conformal now a trim, not a rescue), coverage 0.787/0.813.
+                Sim validation re-run: 0.79->0.81 overall (Bahrain 0.53->0.58, still SC-gap).
+                evaluate.py + demo re-run, 71 tests green, model cards updated.
+                v1 archived: tft_v1_artifacts_backup.zip. Sweep CSVs in reports/lap_time/.
   [ ] Phase 5 — STRETCH: RL pit agent in the simulator, vs MDP. Only if dashboard not more
                 valuable; Section 10.5. (~10 Kaggle GPU hrs)
   [ ] Phase 6 — FastAPI + Streamlit dashboard + HTML showcase page. Section 10.6.
@@ -430,20 +443,16 @@ Undertraining (20 epochs vs ~26) is a partial confound, so it's "no improvement,
 causal result. v1 restored as deployed; v2 archived (`tft_v2_artifacts.zip`). A converged
 v2 re-run is the clean tiebreak if a Kaggle slot frees up (optional, low priority).
 
-**HPO round 1 DONE (notebook 06, 2026-06-11, ~1.5h T4 — ~1 min/epoch, 5x faster than estimated):**
-v1-features sweep: best = h64 @ 1.1239 val green vs v1 1.12 — statistical tie, v1 config confirmed
-near-optimal for v1 features. **BUT the v2-features tiebreak (Driver+EngineMaker, h64, converged
-18 epochs) hit 1.083 val green — beats the v1 bar.** The old v2 failure was undertraining + h32;
-at h64 converged the features pay off. Notebook 06's deploy guard only checked Stage B, so it never
-deployed and the tiebreak ckpt wasn't zipped. CSVs: reports/lap_time/hpo_stage_{a,b}.csv +
-hpo_v2_tiebreak.csv.
+**TFT HPO DONE — v3 deployed (2026-06-11, Section 8 tracker entry has the full numbers).**
+Headline: swept v2-features h64 model, val green 1.02 / test green 1.56 (v1: 1.12/1.62) —
+cross-era improved too. Recalibration + sim validation (0.81) + evaluate.py + 71 tests all re-run
+locally. Phases 0-4 now closed in best-known form: every model either swept (TFT, LightGBM/Optuna)
+or convergence-confirmed; no further training pending.
 
-**NEXT (user action): run `notebooks/07_tft_hpo_round2_kaggle.ipynb` on Kaggle T4 (~2-3h)** —
-re-trains the v2@h64 champion (seed 42, gets its ckpt + test numbers), pushes h96/h128, sweeps
-encoder length 12→24, patience 10. Winner (val-selected, bar 1.12) → test eval + recalibration
-in-notebook. Cross-era test green reported honestly vs v1's 1.62 (driver-as-proxy risk, Errors #22).
-After artifacts: BACK UP local v1 models/ zip FIRST, then unzip, evaluate.py, pytest, docs.
-**Then choose Phase 6 (dashboard — recommended) or Phase 5 (RL).** Playbooks: Sections 10.5 / 10.6.
+**NEXT (user action): choose Phase 6 (dashboard — recommended next, biggest portfolio visual)
+or Phase 5 (RL stretch, ~10 Kaggle GPU hrs).** Playbooks: Sections 10.5 / 10.6.
+Optional residuals (not blockers, document-only): SC hazard in the sim (Bahrain coverage gap),
+street-circuit MAE spread, 6-race test-set noise.
 
 **Watch:** TFT win rests on autoregressive in-stint history (thesis, not leakage). 2026 test =
 6 races, noisy. Kaggle: T4 not P100 (Error 15). Model binaries gitignored — download from Kaggle

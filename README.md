@@ -17,17 +17,17 @@ Most F1 ML projects stop at "I trained a model on a table." This project compose
 | BayesianRidge (one-hot + scaled) | 4.35 / 3.13 | 4.19 / 3.09 |
 | RandomForest (integer codes) | 6.47 / 5.63 | 8.87 / 8.30 |
 | LightGBM (Optuna-tuned baseline) | 3.49 / 2.14 | 3.53 / 2.22 |
-| **Temporal Fusion Transformer** | **2.25 / 1.12** | **3.78 / 1.62** |
+| **Temporal Fusion Transformer (swept)** | **2.27 / 1.02** | **3.77 / 1.56** |
 
 Three results worth reading closely:
 
 1. **The TFT roughly halves the LightGBM green-flag MAE on both splits.** Its edge is legitimate sequence modeling, not leakage: the encoder consumes each stint's *past lap times* (known at prediction time) to predict the next lap — degradation dynamics a tree treating laps as independent rows cannot see.
-2. **Cross-regulation generalization.** 2026 introduced new aero/power-unit regulations and three new teams (test set = unseen era, 6 races). LightGBM holds 2.16 → 2.11 green MAE across the boundary; the TFT holds 1.12 → 1.62. Era is an explicit feature, encodings are frozen from train, and the degradation across the boundary is reported, not hidden.
+2. **Cross-regulation generalization.** 2026 introduced new aero/power-unit regulations and three new teams (test set = unseen era, 6 races). LightGBM holds 2.16 → 2.11 green MAE across the boundary; the TFT holds 1.02 → 1.56. Era is an explicit feature, encodings are frozen from train, and the degradation across the boundary is reported, not hidden.
 3. **RandomForest is kept as a documented failure case.** It collapses across the era boundary (5.61 → 8.52) because it can't handle integer-coded categoricals or unseen teams — the motivating contrast for LightGBM's native categorical handling. Honest baselines beat quiet deletions.
 
-**Uncertainty is a first-class output — and it's recalibrated.** The TFT predicts 0.1/0.5/0.9 quantiles; measured coverage was 0.75 in-era / 0.66 across the 2026 boundary vs 0.80 nominal (overconfident). Era-aware **split-conformal recalibration** (calibrated on held-out rounds, never the laps it's scored on) fixes it: era-0 coverage lands at **0.800 exactly**; era-1 at 0.879 (conservatively wide from a one-race calibration set — the safe direction). The simulation engine samples from the *recalibrated* bands.
+**Uncertainty is a first-class output — and it's recalibrated.** The TFT predicts 0.1/0.5/0.9 quantiles; raw coverage is 0.72 in-era / 0.67 across the 2026 boundary vs 0.80 nominal (overconfident — a sharper median means narrower raw bands). Era-aware **split-conformal recalibration** (calibrated on held-out rounds, never the laps it's scored on) fixes it: era-0 coverage **0.787**, era-1 **0.813** — both inside the success window, with shifts of just +0.05s/+0.15s (the swept model generalizes well enough that conformal is a trim, not a rescue). The simulation engine samples from the *recalibrated* bands.
 
-**Strategy layer (Phase 4):** an exact backward-induction **MDP** (lap × tyre-age × compound × two-compound-rule) proposes strategies; the **Monte Carlo engine** (vectorized torch rollouts of the full field with tyre/pace/pit-loss uncertainty + a circuit-class overtaking model) ranks them as win-probability distributions. They agree independently — the MDP's optimal Bahrain 2-stop also wins the sim's recommendation table. **Validated by historical replay**: across 4 contrasting 2025 races, 79% of drivers' actual finishing positions fall inside their central-80% simulated band (target 80%; the miss is SC-affected Bahrain — the v1 engine has no safety-car model, documented).
+**Strategy layer (Phase 4):** an exact backward-induction **MDP** (lap × tyre-age × compound × two-compound-rule) proposes strategies; the **Monte Carlo engine** (vectorized torch rollouts of the full field with tyre/pace/pit-loss uncertainty + a circuit-class overtaking model) ranks them as win-probability distributions. They agree independently — the MDP's optimal Bahrain 2-stop also wins the sim's recommendation table. **Validated by historical replay**: across 4 contrasting 2025 races, 81% of drivers' actual finishing positions fall inside their central-80% simulated band (target 80%; the residual miss is SC-affected Bahrain — the v1 engine has no safety-car model, documented).
 
 **Tyre degradation (Phase 3):** quadratic curves `b·age + c·age²` fit per (compound × circuit × era) on fuel-corrected, green-flag-only stint deltas, with 95% CIs from the covariance and hierarchical pooling for thin cells (2026 cells pool to era level — wide CIs in low-data regimes, never false precision). Era-0 degradation rates land in physically sensible territory: HARD 0.024 / MEDIUM 0.033 s/lap linear terms, SOFT carrying the largest cliff coefficient.
 
@@ -113,9 +113,9 @@ No live telemetry (tyre temps, fuel flow, ERS, active-aero state — the last es
 - [x] Baseline ladder: Ridge → RF → LightGBM (Optuna), SHAP, ablations, model card
 - [x] TFT with quantile uncertainty, cross-era eval, calibration measurement
 - [x] Tyre degradation curves with CIs + hierarchical pooling
-- [x] TFT quantile recalibration (era-aware split conformal — era-0 coverage 0.800 on the nose)
+- [x] TFT quantile recalibration (era-aware split conformal — coverage 0.787/0.813 vs 0.80 nominal)
 - [x] Pit-strategy MDP (exact backward induction, two-compound rule, policy heatmaps)
-- [x] **Monte Carlo race-simulation engine** — 79% historical-replay coverage vs 80% target
-- [x] TFT v2 on Kaggle (driver + engine-maker static categoricals) — **ran, did not beat v1, kept v1.** Adding `Driver` + `EngineMaker` static categoricals left val green flat (1.12→1.14) and degraded cross-era test green 1.62→1.94 — the same driver-as-car-proxy cross-era cost seen in the LightGBM ablation, now confirmed on the sequence model. (Caveat: v2 early-stopped at 20 epochs vs v1's ~26, so undertraining is a partial confound; read as "no improvement," not a clean causal result.) v1 remains the deployed TFT.
+- [x] **Monte Carlo race-simulation engine** — 81% historical-replay coverage vs 80% target
+- [x] **TFT hyperparameter sweep (2 rounds on Kaggle T4) — v3 deployed.** Round 1 confirmed the hand-picked v1 config near-optimal *for v1 features* (best alternative tied at +0.004s), but exposed that the earlier "v2 features failed" result was an undertraining + capacity artifact: converged at hidden 64, `Driver`+`EngineMaker` static categoricals win. Round 2 settled the architecture (h96/h128 overfit, encoder 24 < 12) → **val green 1.12→1.02, test green 1.62→1.56 — the cross-era driver-as-proxy cost did not materialize at convergence.** Selection val-only throughout; sweep records in `reports/lap_time/hpo_*.csv`.
 - [ ] RL pit agent vs MDP in the simulator (stretch)
 - [ ] FastAPI + Streamlit dashboard + deployment
