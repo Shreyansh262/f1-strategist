@@ -13,6 +13,9 @@
 ### v3.3 (2026-06-11): TFT v2 RAN — did NOT beat v1 (val green 1.12->1.14 flat, test green
 ###   1.62->1.94 cross-era degradation); v1 KEPT as deployed, v2 archived. Documented finding
 ###   (driver-as-car-proxy, same as LightGBM ablation); undertrained (20 ep) = partial confound.
+### v3.5 (2026-06-12): Phase 5 RL TRAINED + EVALUATED — PPO (3 seeds × 3M, Kaggle T4) matched,
+###   did NOT beat the MDP (+1.2s race time / −0.08 finish pos, paired 500-ep eval); 100% legal
+###   both; documented per 10.5. Model card rl_pit_agent.md written; binaries gitignored, CSVs committed.
 ### GPU note: Phase 2 ran on Kaggle T4. ~24 Kaggle GPU hours remain (v2 spent ~2h); next GPU
 ### job = RL (Phase 5, ~10h) OR optional converged v2 re-run. Phase 6 dashboard is all-CPU.
 
@@ -286,18 +289,22 @@ grid proxy = lap-1 cumulative order); writes reports/simulation/validation.{csv,
 Tests: `tests/test_simulation.py` (9: MDP rule/monotonicity/replay-consistency; engine
 ordering/probability-sum/seed/overtake-freeze/extra-stop-cost).
 
-### NEW — `src/rl/env.py` — STATUS: DONE (2026-06-12, Phase 5 scaffold)
+### NEW — `src/rl/env.py` — STATUS: DONE — trained 3×3M on Kaggle 2026-06-12, evaluated vs MDP (matched, not beat)
 Gymnasium RaceEnv: single-rollout per-lap transition. Obs = MDP state vector (norm lap, tyre age,
 compound one-hot, position, gap-ahead, laps-remaining, era) + last-3 lap-time deltas. Actions
 Discrete(4) = stay_out/pit SOFT/MEDIUM/HARD. Reward = −lap_time/1000 + terminal position bonus;
 two-compound rule = −5 terminal penalty. Imports engine.py constants/components (no magic-number
 duplication). Passes gymnasium env_checker.
 
-### NEW — `src/rl/train_ppo.py` — STATUS: DONE (2026-06-12, Phase 5 scaffold)
-PPO trainer: MlpPolicy, SubprocVecEnv, checkpoints every 500k → models/rl/. Ready for Kaggle.
+### NEW — `src/rl/train_ppo.py` — STATUS: DONE — trained 3×3M on Kaggle T4 2026-06-12
+PPO trainer: MlpPolicy, SubprocVecEnv, checkpoints every 500k → models/rl/. Ran 3 seeds × 3M steps
+on Kaggle; final + checkpoint zips + tb/ logs in models/rl/ (binaries gitignored).
 
-### NEW — `src/rl/evaluate_rl.py` — STATUS: DONE (2026-06-12, Phase 5 scaffold)
-Paired common-seed PPO-vs-MDP rollouts → reports/rl/ppo_vs_mdp.csv. Head-to-head comparison.
+### NEW — `src/rl/evaluate_rl.py` — STATUS: DONE — evaluated vs MDP 2026-06-12 (matched, not beat)
+Paired common-seed PPO-vs-MDP rollouts → reports/rl/ppo_vs_mdp.csv. 500 eps/seed on Kaggle: PPO
+slower on race time 2/3 seeds (mean +1.2s, MDP's objective), marginally better mean finish (2.57-2.60
+vs 2.664) all seeds, 100% legal both. NOTE: hard-codes output to ppo_vs_mdp.csv — local re-runs
+clobber the Kaggle summary, so the local 200-ep sanity output is kept as ppo_vs_mdp_local200.csv.
 
 ### NEW — `scripts/export_deploy_bundle.py` — STATUS: DONE (2026-06-12, Phase 7)
 Idempotent bundle builder: 2.41 MB total (data, models, thin src, reports, dashboard). HF Spaces
@@ -445,9 +452,17 @@ v3 PHASES (no fixed weeks — quality first, sprint pace):
   [x] Phase 6 — DONE (2026-06-12): FastAPI + Streamlit dashboard + HTML showcase page.
                 src/api/main.py (~500 lines), dashboard/ (app.py + 3 pages), all endpoints
                 live-tested, theme complete. Section 10.6 playbook executed.
-  [~] Phase 5 — SCAFFOLDED (2026-06-12), training PENDING: RL pit agent in simulator, vs MDP.
-                src/rl/env.py + train_ppo.py + evaluate_rl.py + tests done; notebooks/08_rl_ppo.ipynb
-                ready for Kaggle (T4 x2, ~8-10h, 3 seeds × 3M steps). User runs Kaggle.
+  [x] Phase 5 — DONE (2026-06-12): RL pit agent trained + evaluated vs MDP. 3 seeds × 3M steps
+                PPO (MlpPolicy) trained on Kaggle T4 in RaceEnv (checkpoints every 500k). Paired
+                500-ep common-seed eval vs the Phase-4a MDP: PPO SLOWER on race time 2/3 seeds
+                (mean +1.2s, the MDP's own objective), marginally BETTER mean finish (2.57-2.60 vs
+                2.664) on all 3 seeds, both 100% legal (two-compound rule). Verdict: MATCHED, did
+                NOT beat — objective mismatch (PPO optimizes finish-position reward, MDP minimizes
+                single-car race time); documented per 10.5. Model card rl_pit_agent.md written.
+                Binaries gitignored (*.zip); reports/rl/ppo_vs_mdp*.csv committed. Local 200-ep
+                sanity re-run (mean PPO−MDP +1.198s, 50% PPO-faster, both legal 1.0; saved as
+                reports/rl/ppo_vs_mdp_local200.csv) consistent with the +1.501s seed-0 Kaggle row. Not wired
+                into dashboard/API by scope — serving stays MDP (proposes) + MC sim (ranks).
   [~] Phase 7 — BUNDLE READY (2026-06-12), push PENDING: deploy_bundle/ (2.41 MB, data+models+
                 thin src+dashboard), DEPLOY.md with 4-step instructions, .streamlit/config.toml.
                 export_deploy_bundle.py idempotent. HF Spaces route: streamlit SDK. User pushes to HF.
@@ -476,13 +491,22 @@ or convergence-confirmed; no further training pending.
 endpoints live-tested; dashboard pages (Pre-Race / Live-Replay / Post-Race) verified via
 Streamlit AppTest + real 2025 race replay. Theme complete, launch command documented in TUTOR.md.
 
-**Phases 5 & 7 UNCOMMITTED (2026-06-12):** Phase 5 (RL env + training scaffold) ready for user
-to run Kaggle notebook. Phase 7 (deploy bundle + HF Spaces route) ready for user to push per
+**Phase 5 DONE (2026-06-12): RL agent TRAINED + EVALUATED + DOCUMENTED.** PPO (3 seeds × 3M steps,
+Kaggle T4) trained in RaceEnv; paired 500-ep eval vs MDP: PPO slower on race time 2/3 seeds (mean
++1.2s, the MDP's objective), marginally better mean finish (2.57-2.60 vs 2.664) all seeds, both 100%
+legal. Verdict: matched, did not beat — objective mismatch (PPO optimizes finish-position reward, MDP
+minimizes single-car race time), documented per 10.5. Model card `rl_pit_agent.md` written. Artifacts:
+binaries gitignored (`*.zip`), `reports/rl/ppo_vs_mdp*.csv` committed. Local 200-ep sanity re-run
+(reports/rl/ppo_vs_mdp_local200.csv: mean PPO−MDP +1.198s, 50% PPO-faster, both legal 1.0) consistent
+with the +1.501s seed-0 Kaggle row. Phase 5 is UNCOMMITTED (user commits).
+
+**Phase 7 UNCOMMITTED (2026-06-12):** deploy bundle + HF Spaces route ready for user to push per
 DEPLOY.md instructions.
 
-**NEXT (user action): commit the Phase 5/6/7 work (git add src/api/ src/rl/ dashboard/ scripts/export_deploy_bundle.py DEPLOY.md TUTOR.md
-and any model/test updates); run notebooks/08_rl_ppo.ipynb on Kaggle (T4 x2, ~8-10h, 3 seeds × 3M);
-push deploy_bundle/ to HF Spaces per DEPLOY.md; screenshot dashboard for README.**
+**NEXT (user action): commit the Phase 5/6/7 work (git add reports/rl/*.csv src/models/model_cards/rl_pit_agent.md
+MASTER_CONTEXT.md notebooks/08_rl_ppo.ipynb src/api/ src/rl/ dashboard/ scripts/export_deploy_bundle.py
+DEPLOY.md TUTOR.md and any model/test updates); push deploy_bundle/ to HF Spaces per DEPLOY.md;
+screenshot dashboard for README.**
 Optional residuals (not blockers, document-only): SC hazard in the sim (Bahrain coverage gap),
 street-circuit MAE spread, 6-race test-set noise.
 

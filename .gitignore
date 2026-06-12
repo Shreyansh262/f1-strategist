@@ -25,6 +25,7 @@ models/*.joblib
 models/*.pkl
 models/*.pt
 models/*.ckpt
+models/rl/tb/
 
 # ── Artifact bundles (downloaded from Kaggle/server) ──────────────────────────
 *.zip
@@ -62,6 +63,6 @@ build/
 .pytest_cache/
 .coverage
 htmlcov/
-
+\rl_ppo_artifacts
 # ── Jupyter ───────────────────────────────────────────────────────────────────
 .ipynb_checkpoints/cache/
