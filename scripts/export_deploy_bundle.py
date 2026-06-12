@@ -267,8 +267,9 @@ def main() -> None:
     # cd deploy_bundle && git add . && git commit && git push).
     if BUNDLE.exists():
         for child in BUNDLE.iterdir():
-            # .gitattributes holds the LFS tracking rules (parquet/joblib/png)
-            if child.name in (".git", ".gitattributes"):
+            # .gitattributes holds the LFS tracking rules (parquet/joblib/png);
+            # .gitignore keeps smoke-test __pycache__ out of HF pushes
+            if child.name in (".git", ".gitattributes", ".gitignore"):
                 continue
             if child.is_dir():
                 shutil.rmtree(child)

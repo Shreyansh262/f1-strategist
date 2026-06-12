@@ -28,7 +28,6 @@ os.environ.setdefault("MLFLOW_ALLOW_FILE_STORE", "true")
 
 import joblib
 import lightgbm as lgb
-import optuna
 import pandas as pd
 from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import RandomForestRegressor
@@ -357,6 +356,8 @@ def _lgbm_objective(trial, X_tr, y_tr, X_val, y_val):
 
 
 def train_lightgbm(X_tr, y_tr, X_val, y_val, n_trials=60):
+    import optuna  # training-only dep — lazy so serve-time imports of this module work
+
     study = optuna.create_study(direction="minimize")
     study.optimize(lambda t: _lgbm_objective(t, X_tr, y_tr, X_val, y_val),
                    n_trials=n_trials, show_progress_bar=True)
