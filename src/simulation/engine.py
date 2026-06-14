@@ -103,6 +103,7 @@ class RaceSpec:
     pit_loss_s: float | None = None          # None -> per-circuit table
     sigma_lap_s: float | None = None         # None -> recalibrated TFT band width
     overtake_prob: float | None = None       # None -> circuit-class table
+    track_temp: float | None = None          # None -> curve's historical temp (Phase 9.4)
 
 
 @dataclass
@@ -214,7 +215,8 @@ def simulate(
             m = comp == ci
             if m.any():
                 mm, ll, hh = predict_degradation(
-                    curves, COMPOUNDS[ci], spec.circuit, spec.era, age[m].astype(float)
+                    curves, COMPOUNDS[ci], spec.circuit, spec.era, age[m].astype(float),
+                    track_temp=spec.track_temp,
                 )
                 mid[m], lo[m], hi[m] = mm, ll, hh
         deg_mid[i]  = torch.tensor(mid, dtype=torch.float32)

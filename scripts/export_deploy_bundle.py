@@ -110,6 +110,8 @@ SRC_MODULES_TO_COPY = [
     "src/pipeline/__init__.py",
     "src/pipeline/features.py",
     "src/pipeline/validate.py",
+    "src/pipeline/circuits.py",     # Phase 9 — circuit coords (stdlib only)
+    "src/pipeline/weather.py",      # Phase 9 — Open-Meteo client (urllib only)
     # Explicitly excluded (not needed at serve time, bring heavy deps):
     #   src/pipeline/ingest.py         — fastf1 import
     #   src/models/lap_time/train_tft.py    — pytorch-forecasting

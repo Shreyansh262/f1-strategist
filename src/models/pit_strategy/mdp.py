@@ -96,8 +96,14 @@ def build_race_model(
     base_lap_s: float,
     curves: pd.DataFrame | None = None,
     pit_table: dict | None = None,
+    track_temp: float | None = None,
 ) -> RaceModel:
-    """Assemble a RaceModel from the Phase 3 tyre curves + pit-loss table."""
+    """Assemble a RaceModel from the Phase 3 tyre curves + pit-loss table.
+
+    ``track_temp`` (Phase 9.4): when given, degradation is evaluated at that
+    track temperature so the optimal policy reflects hotter/colder conditions.
+    None keeps the curve's historical temperature (original behaviour).
+    """
     if curves is None:
         curves = joblib.load(MODELS_DIR / "tyre_curves.joblib")
     if pit_table is None:
@@ -107,7 +113,7 @@ def build_race_model(
     ages = np.arange(0, MAX_AGE + 1, dtype=float)
     tyre_delta = {}
     for comp in COMPOUNDS:
-        mid, _, _ = predict_degradation(curves, comp, circuit, era, ages)
+        mid, _, _ = predict_degradation(curves, comp, circuit, era, ages, track_temp=track_temp)
         tyre_delta[comp] = np.asarray(mid, dtype=float)
 
     return RaceModel(

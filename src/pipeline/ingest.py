@@ -76,16 +76,25 @@ def extract_laps(session: fastf1.core.Session) -> pd.DataFrame:
 
     laps["IsPitLap"] = laps["PitInTime"].notna() | laps["PitOutTime"].notna()
 
-    # ── Merge weather (TrackTemp, AirTemp) onto laps ─────────────────────
+    # ── Merge weather onto laps ──────────────────────────────────────────
     # Weather is time-series; take the median values for the session
-    # (lap-accurate merge requires lap timestamps — median is a safe fallback)
+    # (lap-accurate merge requires lap timestamps — median is a safe fallback).
+    # TrackTemp/AirTemp are model-relevant; Humidity/WindSpeed/Rainfall are
+    # Phase-9 enrichment (passthrough metadata, like TrackStatus — NOT model
+    # features yet). FastF1 Rainfall is a per-snapshot bool → "did it rain at all".
     weather = session.weather_data
     if weather is not None and len(weather) > 0:
         laps["TrackTemp"] = weather["TrackTemp"].median()
         laps["AirTemp"]   = weather["AirTemp"].median()
+        laps["Humidity"]  = weather["Humidity"].median() if "Humidity" in weather else None
+        laps["WindSpeed"] = weather["WindSpeed"].median() if "WindSpeed" in weather else None
+        laps["Rainfall"]  = bool(weather["Rainfall"].any()) if "Rainfall" in weather else None
     else:
         laps["TrackTemp"] = None
         laps["AirTemp"]   = None
+        laps["Humidity"]  = None
+        laps["WindSpeed"] = None
+        laps["Rainfall"]  = None
 
     # Cast Team to str (FastF1 Team field)
     laps["Team"] = laps["Team"].astype(str)

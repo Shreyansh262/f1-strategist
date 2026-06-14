@@ -16,6 +16,15 @@
 ### v3.5 (2026-06-12): Phase 5 RL TRAINED + EVALUATED — PPO (3 seeds × 3M, Kaggle T4) matched,
 ###   did NOT beat the MDP (+1.2s race time / −0.08 finish pos, paired 500-ep eval); 100% legal
 ###   both; documented per 10.5. Model card rl_pit_agent.md written; binaries gitignored, CSVs committed.
+### v3.6 (2026-06-14): Phase 9 (weather/temperature robustness) DELIVERED — 9.1–9.6 all done, LOCAL,
+###   no Kaggle needed (TrackTemp already in every parquet; tyre refit is CPU scipy). New: circuits.py
+###   (lat/long ×25), weather.py (Open-Meteo client, urllib-only, no key), enrich_weather.py (backfilled
+###   Humidity/Wind/Rain/SolarRadiation onto all 94 races + calibrated a track-temp offset model, RMSE 4.1°C).
+###   TEMP-AWARE TYRE MODEL: predict_degradation gains track_temp; curves carry temp_ref/b_temp/c_temp
+###   (era-0 HARD/MED b_temp 0.0024/0.0043 s/lap/°C, tight CIs — hotter ⇒ faster deg, cross-sectional/
+###   confounded, documented). Threaded through RaceSpec.track_temp + build_race_model; Pre-Race page has a
+###   track-temp slider + weather panel + forecast button. 100 tests green (+19). Backward compatible
+###   (track_temp=None ≡ old). User commits.
 ### GPU note: Phase 2 ran on Kaggle T4. ~24 Kaggle GPU hours remain (v2 spent ~2h); next GPU
 ### job = RL (Phase 5, ~10h) OR optional converged v2 re-run. Phase 6 dashboard is all-CPU.
 
@@ -123,6 +132,10 @@ gymnasium==1.2.3           # RL environment API
 # tensorboard is OPTIONAL locally (train_ppo skips tb logging if absent);
 # the Kaggle notebook (08) pip-installs it for episode-reward curves.
 ```
+
+**Phase 9 (2026-06-14) added NO packages** — `src/pipeline/weather.py` uses stdlib `urllib` against
+Open-Meteo (free, no key) with an on-disk JSON cache; the tyre temp-sensitivity refit is scipy `curve_fit`
+(already present). Keep it that way unless a real need appears.
 
 **RULE: Before any pip install, check this list. Only install what's NOT here. Update this list when something new is installed. Watch the torch / lightning / pytorch-forecasting version triangle — it breaks easily. The working combo is now pinned above — do not drift from it without re-running the quicktest.**
 
@@ -336,7 +349,10 @@ Streamlit multi-page app: app.py (Overview — real KPIs from reports/), pages/1
 | Team encoded | `TeamEncoded` | features.py | int, frozen, -1 unseen — **NEW** |
 | Regulation era | `Era` | features.py | int, 0=2022-2025, 1=2026+ |
 | Tyre age | `TyreLife` | FastF1 passthrough | int |
-| Track / Air temp | `TrackTemp` / `AirTemp` | ingest.py | float, nullable |
+| Track / Air temp | `TrackTemp` / `AirTemp` | ingest.py | float, nullable. TrackTemp drives the Phase-9 temp-aware tyre model |
+| Humidity / Wind | `Humidity` / `WindSpeed` | ingest.py (FastF1) or enrich_weather.py (Open-Meteo) | float, nullable. **Phase-9 passthrough metadata, NOT a model feature** (like TrackStatus) |
+| Rainfall | `Rainfall` | ingest.py / enrich_weather.py | bool, nullable. "any precip in session" — passthrough only |
+| Solar radiation | `SolarRadiation` | enrich_weather.py (Open-Meteo ERA5) | float, nullable. W/m²; feeds the track-temp estimate. `AirTempOM`/`TrackTempEst` = Open-Meteo cross-checks |
 | Fuel load / effect | `FuelLoad` / `FuelEffect` | features.py | float |
 | Tyre age² / ³ | `TyreAgeSq` / `TyreAgeCubed` | features.py | float |
 | Compound × TyreLife | `CompoundXTyreLife` | features.py | float |
@@ -466,6 +482,15 @@ v3 PHASES (no fixed weeks — quality first, sprint pace):
   [~] Phase 7 — BUNDLE READY (2026-06-12), push PENDING: deploy_bundle/ (2.41 MB, data+models+
                 thin src+dashboard), DEPLOY.md with 4-step instructions, .streamlit/config.toml.
                 export_deploy_bundle.py idempotent. HF Spaces route: streamlit SDK. User pushes to HF.
+                (Phase-9: circuits.py + weather.py added to the bundle's SRC_MODULES_TO_COPY.)
+  [x] Phase 8 — Honesty & quick wins DONE 2026-06-14 (see 10.8): nav relabel, equal-height cards, per-circuit
+                lap tables, form-based pre-race pace, session temp surfaced, MDP map caption.
+  [x] Phase 9 — Weather/temperature robustness DONE 2026-06-14 (see 10.8). LOCAL only (no Kaggle). circuits.py +
+                weather.py (Open-Meteo, urllib-only) + enrich_weather.py (backfilled all 94 races + calibrated a
+                track-temp offset, RMSE 4.1°C). TEMP-AWARE TYRE MODEL: predict_degradation(track_temp=); curves carry
+                temp_ref/b_temp/c_temp (era-0 HARD/MED 0.0024/0.0043 s/lap/°C, hotter⇒faster deg, cross-sectional/
+                bounded/documented). Threaded RaceSpec.track_temp + build_race_model; Pre-Race track-temp slider +
+                weather panel + forecast button. 100 tests green (+19). Backward compatible.
 ```
 
 ---
@@ -502,6 +527,17 @@ with the +1.501s seed-0 Kaggle row. Phase 5 is UNCOMMITTED (user commits).
 
 **Phase 7 UNCOMMITTED (2026-06-12):** deploy bundle + HF Spaces route ready for user to push per
 DEPLOY.md instructions.
+
+**Phase 9 DONE + UNCOMMITTED (2026-06-14): weather/temperature robustness.** All 6 items shipped LOCAL
+(no Kaggle — TrackTemp already ingested; tyre refit is CPU scipy). New files: src/pipeline/circuits.py,
+src/pipeline/weather.py, scripts/enrich_weather.py, tests/test_weather.py. Edited: ingest.py (Humidity/
+Wind/Rain capture), tyre/fit.py (temp sensitivity + temp-aware predict_degradation), engine.py
+(RaceSpec.track_temp), mdp.py (build_race_model track_temp), dashboard/pages/1_Pre_Race.py (weather panel
++ track-temp slider + forecast button), export_deploy_bundle.py, tyre model card. Data: all 94 raw parquets
+backfilled with weather columns (gitignored — user re-runs `python -m scripts.enrich_weather` on their box if
+needed). 100 tests green. Headline result: era-0 HARD/MED degrade 0.0024/0.0043 s/lap faster per °C (tight CIs);
+e.g. MEDIUM @ Bahrain age-20 = 1.4s loss @20°C vs 2.6s @40°C. Honest caveat: cross-sectional temp estimate,
+confounded with circuit, bounded + documented. NEXT (user): commit Phase 9; optional Phase 10 (live OpenF1).
 
 **NEXT (user action): commit the Phase 5/6/7 work (git add reports/rl/*.csv src/models/model_cards/rl_pit_agent.md
 MASTER_CONTEXT.md notebooks/08_rl_ppo.ipynb src/api/ src/rl/ dashboard/ scripts/export_deploy_bundle.py
@@ -710,17 +746,33 @@ training steps are flagged — user runs them and returns artifacts.
            green_base_pace (legitimately retrospective). Removes the circularity the user spotted.
 - [x] 8.6  Surface session Air/Track temp on Pre-Race + Replay + Post-Race.  DONE 2026-06-14. (Median per session — accepted.)
 
-**Phase 9 — Weather/temperature robustness (LOCAL + 1 Kaggle refit, M–L). THE standout upgrade:**
-- [ ] 9.1  Static circuit→lat/long table (~24 circuits, keyed by EventName/CircuitKey).
-- [ ] 9.2  Open-Meteo client (FREE, no API key): Forecast API (≤16 days, upcoming races) + Archive/ERA5 (historical backfill).
-           Channels: temperature_2m, precipitation/rain, relative_humidity_2m, wind_speed_10m, shortwave_radiation.
-           Track temp not provided by any free API → approximate from air temp + solar radiation (simple offset model).
-- [ ] 9.3  Enrich weather ingest: add Rainfall/Humidity/Wind (session medians, per user) alongside existing Air/Track temp.
-- [ ] 9.4  **Temp-aware tyre degradation** — refit curves with TrackTemp as a covariate (or a temp-scaling multiplier on the
-           existing per-circuit×era curves). KAGGLE SCRIPT — user runs, returns refitted tyre_curves artifact. Core of the upgrade:
-           lets us answer "this circuit, but colder/hotter/wet → tyres last longer / push harder / more stops".
-- [ ] 9.5  Pre-Race weather controls (Air/Track temp + wet/dry toggle, or a "fetch forecast" button) → feed into the sim.
-- [ ] 9.6  Show the fetched forecast on Pre-Race.
+**Phase 9 — Weather/temperature robustness. ALL DONE 2026-06-14 (LOCAL only — no Kaggle needed).**
+Note: 9.4 ran LOCAL not Kaggle — TrackTemp is already in every parquet and the refit is CPU scipy curve_fit
+(same job class as the base tyre fit), so no GPU. 100 tests green (+19 in tests/test_weather.py).
+- [x] 9.1  `src/pipeline/circuits.py` — CIRCUIT_COORDS (lat/long ×25, keyed by CircuitKey) + coords_for() (suffix/case tolerant).  DONE.
+- [x] 9.2  `src/pipeline/weather.py` — Open-Meteo client (urllib + on-disk JSON cache, NO new package, NO key): fetch_archive
+           (ERA5) + fetch_forecast (≤16d). Channels temperature_2m/precipitation/relative_humidity_2m/wind_speed_10m/
+           shortwave_radiation. estimate_track_temp(air, radiation) offset model; session_weather() with session_hour
+           param so night races (Bahrain/Saudi/Singapore/AbuDhabi/Vegas/Qatar) sample the right window.  DONE.
+- [x] 9.3  ingest.extract_laps now also captures FastF1 Humidity/WindSpeed/Rainfall (session medians). Old parquets backfilled
+           via `scripts/enrich_weather.py` (Open-Meteo ERA5 by circuit coords + actual local race date/hour from the FastF1
+           schedule): added Humidity/WindSpeed/Rainfall/SolarRadiation/AirTempOM/TrackTempEst to all 94 races. Same run
+           CALIBRATED the track-temp offset (TrackTemp−AirTemp on radiation): coef 1.775 / bias 2.836, RMSE 4.1°C over 94
+           races → reports/tyre/track_temp_calibration.json (constants mirrored into weather.py). NOT in the Pandera schema
+           (passthrough metadata like TrackStatus). DONE.
+- [x] 9.4  **Temp-aware tyre degradation (the standout).** fit_temp_sensitivity() fits per-(compound×era) temp slopes of b,c
+           via the temp-augmented model; attach_temp_sensitivity() adds temp_ref (cell's own mean temp) + b_temp/c_temp to
+           the curves artifact. predict_degradation gains track_temp (b_eff=b+b_temp·(T−temp_ref) clamped ≥0; band unchanged).
+           era-0 HARD/MED b_temp 0.0024/0.0043 s/lap/°C (tight CIs, n>1300) = hotter⇒faster deg; era-0 SOFT ~0 (CI crosses 0),
+           era-1 thin/provisional. CROSS-SECTIONAL estimate (one session-median temp/race) — confounded with circuit, bounded
+           |b_temp|≤0.01, DOCUMENTED in the model card. Backward compatible (track_temp=None ≡ old; pre-9 curves ignore temp).
+           Re-ran `python -m src.models.tyre.fit` LOCAL. DONE.
+- [x] 9.5  track_temp threaded through RaceSpec.track_temp → simulate → predict_degradation AND build_race_model (MDP).
+           Pre-Race page: weather panel (Air/Track/Humidity/Wind metrics + rain note), a track-temperature slider (default =
+           session median) driving tyre curves + sim + MDP heatmap, a wet/dry toggle (honest: slick model only, INT/WET parked
+           to Phase 11), and a baseline-vs-adjusted dashed overlay on the degradation chart. AppTest clean. DONE.
+- [x] 9.6  Pre-Race "Fetch live forecast" button (weather.session_weather, best-effort/guarded) + conditions metrics; for races
+           already in the data the panel reads the backfilled parquet columns (works offline → HF-deploy safe). DONE.
 
 **Phase 10 — Live race (OpenF1) + flags (L). User: do BOTH live and replay+env-analysis:**
 - [ ] 10.1 OpenF1 client (api.openf1.org, free JSON): positions, intervals, laps, stints, weather, race_control (flags).

@@ -128,18 +128,90 @@ if "baseline_src" in field.columns and len(field):
         "Drivers with no recent history fall back to the field-median form delta."
     )
 
-# Session weather (median per race — in-race temp does not swing drastically).
+# ---------------------------------------------------------------------------
+# Conditions — weather panel + temperature control that drives degradation
+# ---------------------------------------------------------------------------
+
+T.section("Conditions", "Weather & track temperature",
+          sub="Session weather from FastF1 + Open-Meteo. Track temperature drives the "
+              "temperature-aware tyre model — push it up or down to see the strategy respond.")
+
+
+def _med(df, col):
+    return float(df[col].median()) if col in df.columns and df[col].notna().any() else None
+
+
 _wx = T.load_race(season, rnd)
+hist_track = hist_air = None
+wx_meta = {}
 if _wx is not None and not _wx.empty:
-    _at = _wx["AirTemp"].dropna() if "AirTemp" in _wx.columns else None
-    _tt = _wx["TrackTemp"].dropna() if "TrackTemp" in _wx.columns else None
-    _bits = []
-    if _at is not None and len(_at):
-        _bits.append(f"Air **{_at.median():.0f}°C**")
-    if _tt is not None and len(_tt):
-        _bits.append(f"Track **{_tt.median():.0f}°C**")
-    if _bits:
-        st.caption("Session conditions: " + " · ".join(_bits))
+    hist_track = _med(_wx, "TrackTemp")
+    hist_air = _med(_wx, "AirTemp")
+    wx_meta = {
+        "Humidity": _med(_wx, "Humidity"),
+        "WindSpeed": _med(_wx, "WindSpeed"),
+        "SolarRadiation": _med(_wx, "SolarRadiation"),
+        "Rainfall": bool(_wx["Rainfall"].any()) if "Rainfall" in _wx.columns and _wx["Rainfall"].notna().any() else None,
+    }
+
+# Optional: fetch a live forecast for an upcoming race (best-effort, networked).
+fc = st.session_state.get("prerace_forecast")
+with st.expander("Fetch live forecast (upcoming race / what-if date)"):
+    fdate = st.text_input("Race date (YYYY-MM-DD, local)", key="fc_date",
+                          help="Open-Meteo forecast ≤16 days ahead, else ERA5 archive.")
+    if st.button("Fetch forecast", key="fc_btn") and fdate.strip():
+        try:
+            from src.pipeline.weather import session_weather
+            got = session_weather(circuit, fdate.strip(), mode="auto")
+            if got.get("source") == "unavailable":
+                st.warning("Forecast unavailable for this circuit/date.")
+            else:
+                st.session_state["prerace_forecast"] = got
+                fc = got
+                st.success(f"Fetched {got['source']} weather for {fdate.strip()}.")
+        except Exception as e:                                # pragma: no cover
+            st.warning(f"Forecast fetch failed: {e}")
+
+# Default track temp: forecast estimate > historical session median > 30°C.
+if fc and fc.get("TrackTempEst") is not None:
+    default_track = float(fc["TrackTempEst"])
+elif hist_track is not None:
+    default_track = hist_track
+else:
+    default_track = 30.0
+
+mcols = st.columns(4)
+mcols[0].metric("Air temp", f"{(fc['AirTemp'] if fc else hist_air):.0f}°C" if (fc and fc.get('AirTemp') is not None) or hist_air is not None else "—")
+mcols[1].metric("Track temp (session)", f"{hist_track:.0f}°C" if hist_track is not None else "—")
+_hum = (fc.get("Humidity") if fc else None) or wx_meta.get("Humidity")
+mcols[2].metric("Humidity", f"{_hum:.0f}%" if _hum is not None else "—")
+_wind = (fc.get("WindSpeed") if fc else None) or wx_meta.get("WindSpeed")
+mcols[3].metric("Wind", f"{_wind:.0f} km/h" if _wind is not None else "—")
+
+_rain = (fc.get("Rainfall") if fc else wx_meta.get("Rainfall"))
+if _rain:
+    st.caption("🌧️ Precipitation recorded for this session — see the wet-running note below.")
+if fc:
+    st.caption(f"Showing **{fc['source']}** forecast for {st.session_state.get('fc_date','')}. "
+               f"Estimated track temp **{fc.get('TrackTempEst', float('nan')):.0f}°C** "
+               "(air + solar-radiation offset model).")
+
+cc1, cc2 = st.columns([3, 2])
+track_temp = cc1.slider(
+    "Track temperature for the strategy (°C)",
+    10.0, 60.0, float(round(default_track)), step=1.0,
+    help="Feeds the temperature-aware tyre curves, the Monte-Carlo sim, and the MDP policy. "
+         "Hotter track → faster degradation → earlier / extra stops.",
+)
+wet = cc2.toggle("Wet / damp race", value=bool(_rain),
+                 help="Slick degradation curves only cover dry running.")
+if wet:
+    T.warn("Wet running is outside the fitted slick tyre model (SOFT/MEDIUM/HARD only — "
+           "INTERMEDIATE/WET are a parked Phase-11 item). Strategy below treats the race as "
+           "dry-on-slicks and is indicative only; expect a real wet race to need more, earlier stops.")
+if hist_track is not None and abs(track_temp - hist_track) >= 1:
+    st.caption(f"Adjusted **{track_temp - hist_track:+.0f}°C** vs this session's measured "
+               f"track temp ({hist_track:.0f}°C).")
 
 ego = st.selectbox("Ego driver (strategy target)", lineup["Driver"].tolist())
 
@@ -168,13 +240,14 @@ def _make_field_specs() -> list:
 # ---------------------------------------------------------------------------
 
 T.section("Tyres", "Degradation curves",
-          sub="Fuel-corrected lap-time loss vs tyre age, with the fitted 95% confidence band.")
+          sub=f"Fuel-corrected lap-time loss vs tyre age at **{track_temp:.0f}°C** track temp, "
+              "with the fitted 95% confidence band. Dashed = baseline (historical session temp).")
 
 ages = np.arange(1, 36, dtype=float)
 fig_tyre = go.Figure()
 for comp in ["SOFT", "MEDIUM", "HARD"]:
     try:
-        mid, lo, hi = predict_degradation(curves, comp, circuit, era, ages)
+        mid, lo, hi = predict_degradation(curves, comp, circuit, era, ages, track_temp=track_temp)
     except Exception:
         continue
     color = T.COMPOUND_COLORS[comp]
@@ -187,6 +260,16 @@ for comp in ["SOFT", "MEDIUM", "HARD"]:
                                   showlegend=False, hoverinfo="skip"))
     fig_tyre.add_trace(go.Scatter(x=ages, y=mid, mode="lines", name=comp,
                                   line=dict(color=color, width=2.4)))
+    # Baseline (historical-temp) line for comparison when the slider is moved.
+    if hist_track is not None and abs(track_temp - hist_track) >= 1:
+        try:
+            base_mid, _, _ = predict_degradation(curves, comp, circuit, era, ages, track_temp=hist_track)
+            fig_tyre.add_trace(go.Scatter(x=ages, y=base_mid, mode="lines",
+                                          name=f"{comp} (baseline)", showlegend=False,
+                                          line=dict(color=color, width=1.2, dash="dot"),
+                                          opacity=0.6, hoverinfo="skip"))
+        except Exception:
+            pass
 fig_tyre.update_layout(xaxis_title="Tyre age (laps)", yaxis_title="Δ lap time vs fresh (s)")
 st.plotly_chart(T.style_fig(fig_tyre, 360), width="stretch")
 
@@ -224,7 +307,7 @@ with st.expander("Add a custom strategy"):
 
 if st.button("Run simulation", type="primary"):
     specs = _make_field_specs()
-    spec = RaceSpec(circuit=circuit, era=era, n_laps=n_laps, drivers=specs)
+    spec = RaceSpec(circuit=circuit, era=era, n_laps=n_laps, drivers=specs, track_temp=track_temp)
     with st.spinner(f"Rolling out {n_rollouts:,} races per candidate…"):
         rec = recommend(spec, ego, candidates, n_rollouts=n_rollouts)
         # also a full-field sim with the ego on its best candidate for grid bars
@@ -232,7 +315,8 @@ if st.button("Run simulation", type="primary"):
         ego_idx = next(i for i, d in enumerate(specs) if d.driver == ego)
         specs[ego_idx].start_compound = best["start"]
         specs[ego_idx].strategy = eval(best["stops"])  # noqa: S307 - our own serialized tuples
-        field_res = simulate(RaceSpec(circuit=circuit, era=era, n_laps=n_laps, drivers=specs),
+        field_res = simulate(RaceSpec(circuit=circuit, era=era, n_laps=n_laps, drivers=specs,
+                                      track_temp=track_temp),
                              n_rollouts=n_rollouts)
     st.session_state["prerace"] = {
         "rec": rec, "field": field_res.table(), "ego": ego, "best": best["strategy"],
@@ -293,7 +377,7 @@ two_used = st.checkbox("Second compound already used (rule satisfied)", value=Fa
 
 try:
     base_pace = float(field["base_pace_s"].median())
-    model = build_race_model(circuit, era, n_laps, base_pace, curves)
+    model = build_race_model(circuit, era, n_laps, base_pace, curves, track_temp=track_temp)
     res = solve(model, start_compound=pol_compound)
     ci = COMPOUNDS.index(pol_compound)
     grid = res["policy"][1:, ci, :, int(two_used)]          # [lap, age]

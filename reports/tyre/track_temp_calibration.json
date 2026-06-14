@@ -1,0 +1,7 @@
+{
+  "TRACK_TEMP_RAD_COEF": 1.775,
+  "TRACK_TEMP_BIAS": 2.8355,
+  "n_races": 94,
+  "rmse_c": 4.102,
+  "note": "TrackTemp \u2248 AirTemp + COEF\u00b7(shortwave_radiation/100) + BIAS, fit on FastF1 session-median gap vs Open-Meteo ERA5 radiation."
+}

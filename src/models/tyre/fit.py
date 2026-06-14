@@ -102,6 +102,25 @@ def degradation_delta(b: float, c: float, age: np.ndarray | float,
     return b * (np.asarray(age) - age_from) + c * (np.asarray(age) ** 2 - age_from ** 2)
 
 
+def degradation_model_temp(
+    x: np.ndarray, b0: float, c0: float, b_temp: float, c_temp: float
+) -> np.ndarray:
+    """Temperature-augmented degradation (Phase 9.4).
+
+    x is a (3, n) array: row 0 = tyre age, row 1 = age0, row 2 = dT
+    (TrackTemp − pool reference temp). The slope/curvature scale linearly with
+    track temperature:
+
+        delta(age) = (b0 + b_temp·dT)·(age − age0) + (c0 + c_temp·dT)·(age² − age0²)
+
+    so b_temp is the extra s/lap of linear degradation per °C above the pool's
+    reference temperature — the quantity that lets the sim answer "this circuit,
+    but hotter/colder".
+    """
+    age, age0, dT = x[0], x[1], x[2]
+    return (b0 + b_temp * dT) * (age - age0) + (c0 + c_temp * dT) * (age ** 2 - age0 ** 2)
+
+
 # ---------------------------------------------------------------------------
 # Stint preparation
 # ---------------------------------------------------------------------------
@@ -239,6 +258,115 @@ def fit_all_curves(stint_laps: pd.DataFrame) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
+# Temperature sensitivity (Phase 9.4) — how degradation scales with track temp
+# ---------------------------------------------------------------------------
+
+# Plausibility bounds on the per-°C slope sensitivity (s/lap per °C). Tyre
+# degradation rises with track temperature but the effect is gentle; these keep
+# a thin/confounded cell from producing an absurd extrapolation.
+B_TEMP_BOUND: Final[float] = 0.01
+C_TEMP_BOUND: Final[float] = 0.001
+
+
+def fit_temp_sensitivity(stint_laps: pd.DataFrame) -> pd.DataFrame:
+    """Estimate degradation's track-temperature sensitivity per (compound × era).
+
+    Because our ingest stores ONE session-median TrackTemp per race, the
+    temperature signal is CROSS-SECTIONAL — it comes from the same compound
+    being run across races/circuits at different track temperatures, not from
+    within-stint temperature change. We therefore pool all circuits within a
+    (compound, era) and fit the temp-augmented model once, reporting b_temp /
+    c_temp with CIs. This is confounded with circuit characteristics correlated
+    with temperature (documented in the model card); it is the best estimate the
+    lap-median data supports and is used only as a gentle, bounded adjustment.
+
+    Returns one row per (Compound, Era): temp_ref (pool mean TrackTemp), b_temp,
+    c_temp, their CIs, temp_min/temp_max (support), n_stints, n_laps.
+    """
+    if "TrackTemp" not in stint_laps.columns:
+        logger.warning("TrackTemp absent — skipping temperature sensitivity fit")
+        return pd.DataFrame()
+
+    rows = []
+    for (comp, era), g in stint_laps.groupby(["Compound", "Era"]):
+        g = g.dropna(subset=["TrackTemp"])
+        n_stints = g.groupby(STINT_KEYS).ngroups
+        if n_stints < MIN_STINTS_POOLED or len(g) < 10:
+            continue
+        temp_ref = float(g["TrackTemp"].mean())
+        x = np.vstack([
+            g["TyreLife"].to_numpy(dtype=float),
+            g["Age0"].to_numpy(dtype=float),
+            g["TrackTemp"].to_numpy(dtype=float) - temp_ref,
+        ])
+        y = g["Delta"].to_numpy(dtype=float)
+        try:
+            popt, pcov = curve_fit(
+                degradation_model_temp, x, y,
+                p0=[0.05, 0.001, 0.0, 0.0],
+                bounds=([-0.5, -0.05, -B_TEMP_BOUND, -C_TEMP_BOUND],
+                        [2.0, 0.5, B_TEMP_BOUND, C_TEMP_BOUND]),
+                maxfev=20000,
+            )
+        except (RuntimeError, ValueError) as e:
+            logger.warning("temp fit failed for %s Era%d: %s", comp, era, e)
+            continue
+        b0, c0, b_temp, c_temp = popt
+        perr = np.sqrt(np.diag(pcov))
+        dof = max(1, len(y) - 4)
+        t_crit = t_dist.ppf((1 + CI_LEVEL) / 2, dof)
+        rows.append({
+            "Compound": comp, "Era": int(era),
+            "temp_ref": round(temp_ref, 2),
+            "b_temp": float(b_temp), "c_temp": float(c_temp),
+            "b_temp_ci": float(t_crit * perr[2]), "c_temp_ci": float(t_crit * perr[3]),
+            "temp_min": round(float(g["TrackTemp"].min()), 1),
+            "temp_max": round(float(g["TrackTemp"].max()), 1),
+            "n_stints": int(n_stints), "n_laps": int(len(g)),
+        })
+    sens = pd.DataFrame(rows)
+    if len(sens):
+        logger.info("Temp sensitivity fitted for %d (compound×era) pools; "
+                    "b_temp range [%.4f, %.4f] s/lap/°C",
+                    len(sens), sens["b_temp"].min(), sens["b_temp"].max())
+    return sens
+
+
+def attach_temp_sensitivity(
+    curves: pd.DataFrame, stint_laps: pd.DataFrame, sensitivity: pd.DataFrame
+) -> pd.DataFrame:
+    """Add temp_ref / b_temp / c_temp columns to the curves table.
+
+    temp_ref per cell = that cell's own mean TrackTemp (so the fitted b, c are
+    "degradation at the cell's historical temperature"); b_temp/c_temp come from
+    the (compound × era) sensitivity pool. Cells with no sensitivity get 0.0
+    (i.e. predict_degradation with a track_temp simply returns the base curve).
+    """
+    curves = curves.copy()
+    # per-cell historical mean track temp
+    cell_temp = (
+        stint_laps.dropna(subset=["TrackTemp"])
+        .groupby(["Compound", "CircuitKey", "Era"])["TrackTemp"].mean()
+        .rename("temp_ref")
+    )
+    curves = curves.merge(cell_temp, on=["Compound", "CircuitKey", "Era"], how="left")
+
+    if len(sensitivity):
+        sens = sensitivity[["Compound", "Era", "b_temp", "c_temp"]]
+        curves = curves.merge(sens, on=["Compound", "Era"], how="left")
+    else:
+        curves["b_temp"] = np.nan
+        curves["c_temp"] = np.nan
+
+    # Fallbacks: cell with no historical temp → global mean; no sensitivity → 0.
+    global_temp = float(stint_laps["TrackTemp"].mean()) if "TrackTemp" in stint_laps else 30.0
+    curves["temp_ref"] = curves["temp_ref"].fillna(global_temp).round(2)
+    curves["b_temp"] = curves["b_temp"].fillna(0.0)
+    curves["c_temp"] = curves["c_temp"].fillna(0.0)
+    return curves
+
+
+# ---------------------------------------------------------------------------
 # Prediction helper (consumed by the Phase 4 simulation engine)
 # ---------------------------------------------------------------------------
 
@@ -248,11 +376,20 @@ def predict_degradation(
     circuit: str,
     era: int,
     age: np.ndarray | float,
+    track_temp: float | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Degradation delta (s, relative to fresh tyre age=1) with a 95% CI band.
 
     Looks up the cell row (already pool-resolved by fit_all_curves); falls back
     to the closest available row for the compound if the exact cell is missing.
+
+    If ``track_temp`` is given AND the curves carry Phase-9 temperature columns
+    (temp_ref / b_temp / c_temp), the central slope/curvature are adjusted by
+    (track_temp − temp_ref): hotter track → faster degradation. The CI band keeps
+    the cell's fitted half-width (temperature shifts the centre, not the spread).
+    With ``track_temp=None`` or pre-Phase-9 curves the result is identical to the
+    original behaviour — fully backward compatible.
+
     Returns (mid, lo, hi) arrays.
     """
     sel = curves[
@@ -268,10 +405,17 @@ def predict_degradation(
         raise KeyError(f"No tyre curve for compound={compound}")
 
     row = sel.iloc[0]
+    b, c = row["b"], row["c"]
+
+    if track_temp is not None and {"temp_ref", "b_temp", "c_temp"} <= set(curves.columns):
+        dT = float(track_temp) - float(row["temp_ref"])
+        b = max(b + float(row["b_temp"]) * dT, 0.0)   # slope can't go negative
+        c = c + float(row["c_temp"]) * dT
+
     age = np.asarray(age, dtype=float)
-    mid = degradation_delta(row["b"], row["c"], age)
-    lo  = degradation_delta(row["b"] - row["b_ci"], row["c"] - row["c_ci"], age)
-    hi  = degradation_delta(row["b"] + row["b_ci"], row["c"] + row["c_ci"], age)
+    mid = degradation_delta(b, c, age)
+    lo  = degradation_delta(b - row["b_ci"], c - row["c_ci"], age)
+    hi  = degradation_delta(b + row["b_ci"], c + row["c_ci"], age)
     return mid, lo, hi
 
 
@@ -377,6 +521,13 @@ def fit() -> pd.DataFrame:
     if curves.empty:
         raise RuntimeError("No tyre curves fitted — check input data")
 
+    # Phase 9.4 — temperature sensitivity (cross-sectional, per compound × era).
+    sensitivity = fit_temp_sensitivity(stint_laps)
+    curves = attach_temp_sensitivity(curves, stint_laps, sensitivity)
+    if len(sensitivity):
+        sensitivity.to_csv(REPORTS_DIR / "tyre_temp_sensitivity.csv", index=False)
+        logger.info("Saved tyre_temp_sensitivity.csv (%d compound×era pools)", len(sensitivity))
+
     joblib.dump(curves, MODELS_DIR / "tyre_curves.joblib")
     curves.to_csv(REPORTS_DIR / "tyre_curves.csv", index=False)
     logger.info("Saved tyre_curves.joblib + tyre_curves.csv")
@@ -404,6 +555,12 @@ def fit() -> pd.DataFrame:
             "mean_b": float(curves["b"].mean()),
             "mean_c": float(curves["c"].mean()),
         })
+        if len(sensitivity):
+            mlflow.log_metrics({
+                "temp_sens_pools": len(sensitivity),
+                "mean_b_temp_per_C": float(sensitivity["b_temp"].mean()),
+            })
+            mlflow.log_artifact(str(REPORTS_DIR / "tyre_temp_sensitivity.csv"))
         mlflow.log_artifact(str(REPORTS_DIR / "tyre_curves.csv"))
         for p in plot_paths:
             if p is not None:
