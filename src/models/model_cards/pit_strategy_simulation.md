@@ -35,11 +35,20 @@ Replayed 4 contrasting 2025 races with the drivers' **actual strategies** and le
 ## MDP results (sanity vs racing reality)
 Bahrain: 2-stop (matches the classic 2–3 stop race). Spain: 2-stop. Monaco: 1-stop (matches). Japan (2026): 1-stop. **Known artifact:** at Monaco the MDP pits on the *final lap* to satisfy the two-compound rule at minimum cost — legal and optimal in a deterministic, rival-free world, absurd under real SC risk. Kept deliberately: it is the cleanest demonstration of why the probabilistic simulation layer must sit on top of the MDP.
 
+## Live race & flag-following (Phase 10)
+The engine can now **resume a race mid-flight and follow a flag**, so the same Monte-Carlo machinery projects the *rest* of a race from its live state — no rewrite, just two additions:
+
+- **Mid-stint resume.** `DriverSpec.start_age` sets the opening-lap tyre age (>2 = a car already several laps into a stint), so a remaining-race `RaceSpec` (laps = laps *left*) starts every driver on the tyre and age they are actually on.
+- **In-progress caution.** `RaceSpec.caution = (cause, laps_elapsed)` runs the opening laps under a flag: the whole field is pinned to one dictated pace (`CAUTION_PACE_MULT` — SC 1.40× / VSC 1.30× / yellow 1.12×), so overtaking is frozen (everyone gains the same time); a pit is cheaper (`CAUTION_PIT_FACTOR` — you lose far less relative to a crawling field); and at a **Safety-Car or red-flag restart the field concertinas nose-to-tail** (`SC_BUNCH_GAP_S`, 1.2 s spacing). VSC is milder and does **not** bunch.
+- **It predicts when the flag ends — not blind-follow.** `src/simulation/sc_model.py` learns SC/VSC run-lengths from historical `TrackStatus` (SC mean 4.51 / VSC 1.97 laps across 94 races, `data/sc_duration.json`); each rollout samples its own remaining caution length, *conditioned on how long the flag has already flown* (`sample_remaining(cause, elapsed)`). So a long-running SC is more likely to clear soon, and the finish distribution honestly reflects restart-timing uncertainty.
+
+The live state is assembled by `src/simulation/live_state.py` — `from_replay(season, rnd, lap)` (historical parquet) or `from_openf1(session_key)` (the OpenF1 client, `src/pipeline/openf1.py`) — and surfaced on the dashboard's **Live** page. Everything is **backward compatible**: `start_age=2` / `caution=None` reproduce the pre-Phase-10 engine exactly.
+
 ## Intended use / out of scope
-**For:** pre-race strategy comparison, dashboard win-probability views, the RL agent's training environment (Phase 5). **Not for:** wagering; in-race decisions (no SC/VSC model, no live state); wet races (tyre model excludes INT/WET).
+**For:** pre-race strategy comparison, dashboard win-probability views, the RL agent's training environment (Phase 5), and (Phase 10) mid-race "resume from here" projection under an active flag. **Not for:** wagering; wet races (tyre model excludes INT/WET); and note the caution model projects a *currently-active* flag forward — it does **not** add a random future-SC hazard to an otherwise-green run.
 
 ## Limitations
-No safety-car/VSC hazard (the single biggest gap — a v2 item; ablate separately when added). Overtaking is a 3-parameter Bernoulli, not a wheel-to-wheel model. Lap-1 chaos not modeled (grid spread is a fixed 0.3s/position). Base pace anchors on the race's own field median in validation (track conditions known by ~lap 5 — documented choice). All Phase 2/3 model limitations are inherited.
+The caution model (Phase 10) follows a flag that is *already flying* and samples when it ends; it does not model the *probability of a future* SC/VSC on a green race, and treats a red flag like a Safety Car (no free tyre change / standing restart). Overtaking is a 3-parameter Bernoulli, not a wheel-to-wheel model. Lap-1 chaos not modeled (grid spread is a fixed 0.3s/position). A live OpenF1 snapshot infers car pace from recent lap times (no clean-air pace feed). Base pace anchors on the race's own field median in validation (track conditions known by ~lap 5 — documented choice). All Phase 2/3 model limitations are inherited.
 
 ## Reproduce
 ```bash
@@ -47,6 +56,6 @@ python -m src.models.pit_strategy.pit_loss   # data/pit_loss.json from raw laps
 python -m src.models.pit_strategy.mdp        # optimal strategies + policy heatmaps
 python -m src.simulation.engine              # 6-car demo + recommendation table
 python -m src.simulation.validate_sim        # historical replay validation
-pytest tests/test_simulation.py -v           # 9 tests
+pytest tests/test_simulation.py tests/test_live_engine.py tests/test_live_state.py tests/test_sc_model.py tests/test_openf1.py -v   # 9 + 9 + 15 + 9 + 26
 ```
-Artifacts: `reports/pit_strategy/{optimal_strategies.csv,mdp_vs_actual.csv,policy_*.png}`, `reports/simulation/{validation.csv,validation_summary.md,demo_recommendation.csv}`.
+Artifacts: `reports/pit_strategy/{optimal_strategies.csv,mdp_vs_actual.csv,policy_*.png}`, `reports/simulation/{validation.csv,validation_summary.md,demo_recommendation.csv}`, `data/sc_duration.json` (SC/VSC durations).

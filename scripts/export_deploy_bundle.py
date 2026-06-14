@@ -72,6 +72,7 @@ MODEL_ARTIFACTS = [
 
 DATA_FILES = [
     "data/pit_loss.json",
+    "data/sc_duration.json",        # Phase 10 — SC/VSC durations for caution sampling
     "data/mappings/circuit_map.json",
     "data/mappings/team_map.json",
     "data/mappings/driver_map.json",
@@ -98,6 +99,8 @@ SRC_MODULES_TO_COPY = [
     "src/__init__.py",
     "src/simulation/__init__.py",
     "src/simulation/engine.py",
+    "src/simulation/sc_model.py",    # Phase 10 — SC/VSC duration model (stdlib + pandas)
+    "src/simulation/live_state.py",  # Phase 10 — mid-race → remaining-race RaceSpec
     "src/models/__init__.py",
     "src/models/tyre/fit.py",
     # src/models/tyre/__init__.py — may not exist (implicit namespace pkg); created below
@@ -112,6 +115,7 @@ SRC_MODULES_TO_COPY = [
     "src/pipeline/validate.py",
     "src/pipeline/circuits.py",     # Phase 9 — circuit coords (stdlib only)
     "src/pipeline/weather.py",      # Phase 9 — Open-Meteo client (urllib only)
+    "src/pipeline/openf1.py",       # Phase 10 — OpenF1 live client (urllib only)
     # Explicitly excluded (not needed at serve time, bring heavy deps):
     #   src/pipeline/ingest.py         — fastf1 import
     #   src/models/lap_time/train_tft.py    — pytorch-forecasting

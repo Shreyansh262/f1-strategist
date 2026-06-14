@@ -16,6 +16,18 @@
 ### v3.5 (2026-06-12): Phase 5 RL TRAINED + EVALUATED — PPO (3 seeds × 3M, Kaggle T4) matched,
 ###   did NOT beat the MDP (+1.2s race time / −0.08 finish pos, paired 500-ep eval); 100% legal
 ###   both; documented per 10.5. Model card rl_pit_agent.md written; binaries gitignored, CSVs committed.
+### v3.7 (2026-06-14): Phase 10 (live race + flag-following) DELIVERED — 10.1–10.5 all done, LOCAL,
+###   no Kaggle. New: src/pipeline/openf1.py (OpenF1 REST client, urllib-only, no key, on-disk cache —
+###   list_sessions/resolve_session/live_snapshot(session_key)→{session,drivers,caution}; caution precedence
+###   RED>SC>VSC>YELLOW), src/simulation/sc_model.py + data/sc_duration.json (SC/VSC run-length model from
+###   TrackStatus across 94 races: SC n=67 mean 4.51 max 12, VSC n=57 mean 1.97 max 6; sample_remaining
+###   conditions on laps already elapsed), src/simulation/live_state.py (from_openf1/from_replay/from_snapshot/
+###   spec_from_race_df → a REMAINING-race RaceSpec with start_age/compound/grid_gap/caution). ENGINE: DriverSpec
+###   .start_age (mid-stint resume) + RaceSpec.caution=(cause,elapsed) → whole field at one dictated SC/VSC pace
+###   (overtakes frozen), cheaper pit, SC/RED bunch the field nose-to-tail at the restart (VSC does not); per-rollout
+###   remaining caution length sampled from sc_model. Predicts when the flag ENDS — not blind-follow. dashboard/
+###   pages/4_Live.py (new "Live" page: offline Replay-projection tab + button-gated OpenF1 live tab), wired into
+###   app.py st.navigation. 159 tests green (+59). Backward compatible (caution=None ≡ old). User commits.
 ### v3.6 (2026-06-14): Phase 9 (weather/temperature robustness) DELIVERED — 9.1–9.6 all done, LOCAL,
 ###   no Kaggle needed (TrackTemp already in every parquet; tyre refit is CPU scipy). New: circuits.py
 ###   (lat/long ×25), weather.py (Open-Meteo client, urllib-only, no key), enrich_weather.py (backfilled
@@ -301,6 +313,40 @@ why). `src/simulation/validate_sim.py` = replay protocol (leave-one-race-out dri
 grid proxy = lap-1 cumulative order); writes reports/simulation/validation.{csv,_summary.md}.
 Tests: `tests/test_simulation.py` (9: MDP rule/monotonicity/replay-consistency; engine
 ordering/probability-sum/seed/overtake-freeze/extra-stop-cost).
+**Phase 9 (v3.6):** `RaceSpec.track_temp` threaded to predict_degradation. **Phase 10 (v3.7):**
+`DriverSpec.start_age` (opening-lap tyre age; >2 = mid-stint resume) and `RaceSpec.caution=(cause,
+elapsed)` → in-progress flag: whole field at one dictated pace (CAUTION_PACE_MULT), overtakes frozen,
+cheaper pit (CAUTION_PIT_FACTOR), SC/RED bunch nose-to-tail at the restart (SC_BUNCH_GAP_S; VSC does
+not). Remaining caution length sampled per rollout via `_sample_caution_lengths` (sc_model, with offline
+fallback). `_comp_idx` maps non-slick compounds → MEDIUM. Backward compatible (start_age=2/caution=None ≡
+old). New tests `tests/test_live_engine.py` (9: resume age, SC slows race, restart bunch, VSC no-bunch).
+
+### NEW — `src/pipeline/openf1.py` — STATUS: ✅ DONE (Phase 10.1, v3.7)
+OpenF1 REST client (api.openf1.org, free JSON, NO key), same urllib + on-disk-cache idiom as weather.py
+(cache under data/openf1_cache/). `list_sessions(year,country)`, `resolve_session(session_key)`,
+`live_snapshot(session_key="latest") -> {session{session_key,circuit,year,session_name,current_lap,
+available}, drivers[{driver_number,position,current_lap,compound,start_age,gap_to_leader_s,last_lap_s}],
+caution: None|{cause,elapsed_laps}}`. Consumes /sessions /laps /intervals /stints /position /race_control.
+Fail-soft: any network/parse error → available=False, never raises. Works on ANY session_key (completed
+session → final-lap state). Caution parser replays race_control (precedence RED>SC>VSC>YELLOW). start_age
+= tyre_age_at_start + (current_lap − lap_start). Tests `tests/test_openf1.py` (26, offline-monkeypatched).
+
+### NEW — `src/simulation/sc_model.py` — STATUS: ✅ DONE (Phase 10.4, v3.7)
+SC/VSC duration model from historical TrackStatus runs. `build_distributions()` finds maximal contiguous
+SC ('4') / VSC ('6') lap-runs across all race parquets; `save/load_distributions()` ↔ `data/sc_duration.json`
+(load returns a baked-in fallback if the file is absent). `sample_remaining(cause, elapsed_laps, dist, rng)`
+= empirical conditional draw of the REMAINING caution laps (keep observed totals ≥ elapsed, sample one,
+return total−elapsed, floored at 1); `sample_total()` unconditional. Built from 94 races: SC n=67 mean 4.51
+max 12, VSC n=57 mean 1.97 max 6. Tests `tests/test_sc_model.py` (9, synthetic — no parquet dependency).
+
+### NEW — `src/simulation/live_state.py` — STATUS: ✅ DONE (Phase 10.2, v3.7)
+Pure (no Streamlit, no network at import) mid-race → remaining-race RaceSpec assembler.
+`from_replay(season,rnd,lap)` (historical parquet), `from_openf1(session_key,total_laps)` (→ live_snapshot),
+`from_snapshot(dict)` and `spec_from_race_df(df,lap)` (the unit-testable pure builders). Only drivers still
+circulating at `lap` are included; cumulative race time → grid_gap_s, TyreLife → start_age, Compound →
+start_compound, TrackStatus → caution. `_CIRCUIT_META` maps OpenF1 circuit_short_name → (EventName,
+scheduled race laps) so a live feed knows remaining laps. era from year (≤2025→0). Tests
+`tests/test_live_state.py` (15: circuit map, live assembly, caution threading, replay gaps/retirements).
 
 ### NEW — `src/rl/env.py` — STATUS: DONE — trained 3×3M on Kaggle 2026-06-12, evaluated vs MDP (matched, not beat)
 Gymnasium RaceEnv: single-rollout per-lap transition. Obs = MDP state vector (norm lap, tyre age,
@@ -331,6 +377,7 @@ FastAPI (~500 lines): GET /health, POST /predict/lap-time (frozen-mapping featur
 
 ### NEW — `dashboard/` — STATUS: DONE (2026-06-12, Phase 6)
 Streamlit multi-page app: app.py (Overview — real KPIs from reports/), pages/1_Pre_Race.py (tyre curves + CI ribbons, strategy candidates ranked by win-prob, MDP heatmap), pages/2_Live_Replay.py (lap slider, gap chart, stint timeline, actual-vs-predicted with calibration band, pit alerts), pages/3_Post_Race.py (per-driver MAE bars, actual-vs-sim audit, deg scatter vs curve, error spikes vs TrackStatus). Theme: carbon dark, F1 red, Titillium Web, compound colors. Launch: `venv\Scripts\python.exe -m streamlit run dashboard/app.py`. Dashboard imports src/ directly — does NOT call the API. Verified via Streamlit AppTest (all pages clean) + real 2025 race replay. Existing HTML artifact becomes the static showcase landing page.
+**Phase 10 (v3.7):** added `pages/4_Live.py` ("Live" — tab 1 Replay projection: pick a historical race + lap, project the finish from that lap (flag-aware) via live_state.from_replay + engine.simulate; tab 2 Live (OpenF1): button-gated live_snapshot + from_openf1 projection). Wired into app.py st.navigation as "Live". Offline-safe (network behind a button); AppTest-clean.
 
 ---
 
@@ -491,6 +538,13 @@ v3 PHASES (no fixed weeks — quality first, sprint pace):
                 temp_ref/b_temp/c_temp (era-0 HARD/MED 0.0024/0.0043 s/lap/°C, hotter⇒faster deg, cross-sectional/
                 bounded/documented). Threaded RaceSpec.track_temp + build_race_model; Pre-Race track-temp slider +
                 weather panel + forecast button. 100 tests green (+19). Backward compatible.
+  [x] Phase 10 — Live race (OpenF1) + flag-following DONE 2026-06-14 (see 10.8). LOCAL, no Kaggle. openf1.py
+                (OpenF1 client, urllib-only, no key) + sc_model.py/data/sc_duration.json (SC/VSC durations from
+                94 races: SC mean 4.51 / VSC 1.97 laps) + live_state.py (mid-race → remaining-race RaceSpec).
+                ENGINE: DriverSpec.start_age (resume) + RaceSpec.caution=(cause,elapsed): field bunches under SC,
+                overtakes frozen, cheaper pit, restart concertina; remaining caution length SAMPLED (predicts when
+                the flag ends, not blind-follow). New dashboard "Live" page (Replay-projection + OpenF1 tabs).
+                159 tests green (+59). Backward compatible (caution=None ≡ old).
 ```
 
 ---
@@ -538,6 +592,19 @@ backfilled with weather columns (gitignored — user re-runs `python -m scripts.
 needed). 100 tests green. Headline result: era-0 HARD/MED degrade 0.0024/0.0043 s/lap faster per °C (tight CIs);
 e.g. MEDIUM @ Bahrain age-20 = 1.4s loss @20°C vs 2.6s @40°C. Honest caveat: cross-sectional temp estimate,
 confounded with circuit, bounded + documented. NEXT (user): commit Phase 9; optional Phase 10 (live OpenF1).
+
+**Phase 10 DONE + UNCOMMITTED (2026-06-14): live race (OpenF1) + flag-following.** All 5 items shipped LOCAL
+(no Kaggle). New files: src/pipeline/openf1.py (OpenF1 REST client — list_sessions/resolve_session/live_snapshot,
+urllib + on-disk cache, no key; caution precedence RED>SC>VSC>YELLOW), src/simulation/sc_model.py + data/
+sc_duration.json (SC/VSC run-length model built from TrackStatus across 94 races — SC n=67 mean 4.51 max 12,
+VSC n=57 mean 1.97 max 6; sample_remaining(cause, elapsed) for the rest of an in-progress caution),
+src/simulation/live_state.py (from_openf1 / from_replay / from_snapshot / spec_from_race_df → a remaining-race
+RaceSpec), dashboard/pages/4_Live.py (new "Live" page), tests/test_openf1.py (26) + test_sc_model.py (9) +
+test_live_engine.py (9) + test_live_state.py (15). Edited: engine.py (DriverSpec.start_age mid-stint resume;
+RaceSpec.caution=(cause,elapsed) → SC/VSC field pace, frozen overtakes, cheaper pit, SC/RED restart bunching;
+per-rollout caution length sampled from sc_model with offline fallback; _comp_idx non-slick fallback), app.py
+(st.navigation +Live page). 159 tests green (+59). Backward compatible (caution=None ≡ pre-10 behaviour; pre-10
+specs unaffected). The MDP/sim "resume" reuses the existing engine — no rewrite. NEXT (user): commit Phase 10.
 
 **NEXT (user action): commit the Phase 5/6/7 work (git add reports/rl/*.csv src/models/model_cards/rl_pit_agent.md
 MASTER_CONTEXT.md notebooks/08_rl_ppo.ipynb src/api/ src/rl/ dashboard/ scripts/export_deploy_bundle.py
@@ -774,15 +841,31 @@ Note: 9.4 ran LOCAL not Kaggle — TrackTemp is already in every parquet and the
 - [x] 9.6  Pre-Race "Fetch live forecast" button (weather.session_weather, best-effort/guarded) + conditions metrics; for races
            already in the data the panel reads the backfilled parquet columns (works offline → HF-deploy safe). DONE.
 
-**Phase 10 — Live race (OpenF1) + flags (L). User: do BOTH live and replay+env-analysis:**
-- [ ] 10.1 OpenF1 client (api.openf1.org, free JSON): positions, intervals, laps, stints, weather, race_control (flags).
-- [ ] 10.2 Live state assembler → seed a RaceSpec mid-race (current lap N, retirements, gaps, fitted tyres).
-- [ ] 10.3 "Resume from lap N" projection: re-run the existing Monte-Carlo engine from the live state to project the finish.
-           (Engine already takes arbitrary grid gaps + per-driver specs — reuse, not rewrite.)
-- [ ] 10.4 Flag-following in the sim: under SC → compress gaps, zero overtakes, reduced pace, cheaper pit; under yellow → no
-           overtake in sector. **Predict when the flag ENDS** (user requirement — do not blind-follow): empirical SC/VSC
-           duration distribution from historical TrackStatus (per circuit/cause), sampled for remaining caution laps.
-- [ ] 10.5 Live page UI: true-live mode (OpenF1) AND a relabelled replay-with-env-analysis mode.
+**Phase 10 — Live race (OpenF1) + flags (L). ALL DONE 2026-06-14 (LOCAL — no Kaggle). 159 tests green (+59).**
+- [x] 10.1 `src/pipeline/openf1.py` — OpenF1 client (api.openf1.org, free JSON, urllib + on-disk cache, NO key):
+           list_sessions / resolve_session / live_snapshot(session_key) → {session, drivers[], caution}. Consumes
+           /sessions /laps /intervals /stints /position /race_control. live_snapshot is fail-soft (available=False on
+           any error) and works on ANY session_key (a completed session returns its final-lap state). Caution parser
+           replays race_control with precedence RED>SC>VSC>YELLOW. tests/test_openf1.py (26, fully offline). DONE.
+- [x] 10.2 `src/simulation/live_state.py` — from_replay(season,rnd,lap) (historical parquet) + from_openf1(session_key)
+           (→ live_snapshot) + from_snapshot(dict) + spec_from_race_df(df,lap), all → a REMAINING-race RaceSpec: each
+           DriverSpec carries current compound, start_age (tyre age now), grid_gap_s (= live gap to leader), and
+           RaceSpec.caution is set if a flag is flying. Circuit short-name→EventName + scheduled race-laps map (so a
+           live feed, which never sends total laps, knows how many remain). tests/test_live_state.py (15). DONE.
+- [x] 10.3 "Resume from lap N": engine.py gains DriverSpec.start_age (opening-lap tyre age >2 = mid-stint resume) — the
+           existing vectorized Monte-Carlo engine is REUSED from the live state (arbitrary gaps + per-driver specs). DONE.
+- [x] 10.4 Flag-following in the sim: RaceSpec.caution=(cause,elapsed) → whole field at one dictated pace
+           (CAUTION_PACE_MULT SC 1.40/VSC 1.30/YELLOW 1.12/RED 1.40, overtakes frozen because every car gains the same
+           time), cheaper pit (CAUTION_PIT_FACTOR SC .55/VSC .70/RED .50), and SC/RED bunch the field nose-to-tail at the
+           restart (SC_BUNCH_GAP_S 1.2s; VSC does NOT bunch). **Predicts when the flag ENDS, not blind-follow:**
+           `src/simulation/sc_model.py` + `data/sc_duration.json` learn SC/VSC run lengths from historical TrackStatus
+           (SC n=67 mean 4.51 max 12, VSC n=57 mean 1.97 max 6); sample_remaining(cause, elapsed) draws the rest of the
+           caution PER ROLLOUT, conditioned on how long it has already run. Engine has an offline fallback so it never
+           hard-depends on the artifact. tests/test_sc_model.py (9) + tests/test_live_engine.py (9). DONE.
+- [x] 10.5 `dashboard/pages/4_Live.py` — new "Live" page, two tabs: (1) Replay projection (offline default — pick a
+           historical race + lap, see current order/flag + the projected finish distribution from that lap to the end);
+           (2) Live (OpenF1) — button-gated network fetch → snapshot table + flag banner + live projection. Wired into
+           dashboard/app.py st.navigation. AppTest-clean offline. DONE.
 
 **Phase 11 — Future / parked (documented, not built now):**
 - WET/INTERMEDIATE compounds across tyre curves + MDP + sim (currently S/M/H only). Separate, larger; touches three models.

@@ -182,7 +182,8 @@ def home() -> None:
             )
 
     st.write("")
-    st.info("Use the sidebar to open **Pre-Race**, **Race Replay**, or **Post-Race**.", icon="🏁")
+    st.info("Use the sidebar to open **Pre-Race**, **Race Replay**, **Post-Race**, or **Live** "
+            "(real-time OpenF1 timing + flag-aware projection).", icon="🏁")
 
     # sidebar footer
     with st.sidebar:
@@ -212,5 +213,6 @@ pages = [
     st.Page("pages/1_Pre_Race.py", title="Pre-Race"),
     st.Page("pages/2_Live_Replay.py", title="Race Replay"),
     st.Page("pages/3_Post_Race.py", title="Post-Race"),
+    st.Page("pages/4_Live.py", title="Live"),
 ]
 st.navigation(pages).run()

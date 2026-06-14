@@ -71,6 +71,24 @@ HOLD_GAP_S:    Final[float] = 0.6   # stuck-in-dirty-air gap when the pass fails
 PIT_SIGMA_S:   Final[float] = 0.8   # pit-stop execution noise
 Z80:           Final[float] = 1.2816  # z for the 0.1/0.9 quantiles
 
+# --- caution / flag following (Phase 10.3-10.4) ---------------------------
+# A caution slows the whole field to a single dictated pace (overtaking frozen
+# because every car gains the same time), makes a pit cheaper (you lose far less
+# relative to a crawling field), and — for a full Safety Car — bunches the field
+# nose-to-tail at the restart. VSC is milder and does not bunch.
+CAUTION_PACE_MULT: Final[dict[str, float]] = {
+    "SC": 1.40, "VSC": 1.30, "YELLOW": 1.12, "RED": 1.40,
+}
+CAUTION_PIT_FACTOR: Final[dict[str, float]] = {   # fraction of green pit loss
+    "SC": 0.55, "VSC": 0.70, "YELLOW": 1.0, "RED": 0.50,
+}
+BUNCH_CAUSES: Final[set[str]] = {"SC", "RED"}   # field concertinas at the restart
+SC_BUNCH_GAP_S: Final[float] = 1.2              # nose-to-tail spacing on restart
+# Offline fallback so the engine never hard-depends on the SC duration artifact.
+_CAUTION_FALLBACK: Final[dict[str, list[int]]] = {
+    "SC": [3, 4, 4, 5, 6], "VSC": [2, 2, 3, 3], "YELLOW": [1, 2], "RED": [4, 5, 6],
+}
+
 
 def circuit_class(circuit: str) -> str:
     if circuit in STREET_CIRCUITS:
@@ -78,6 +96,42 @@ def circuit_class(circuit: str) -> str:
     if circuit in POWER_CIRCUITS:
         return "power"
     return "medium"
+
+
+def _comp_idx(compound: str) -> int:
+    """Compound index into COMPOUNDS, defaulting to MEDIUM for non-slicks/unknowns.
+
+    Live feeds can report INTERMEDIATE/WET; wet running is out of scope (the tyre
+    curves are slick-only), so we fall back to MEDIUM rather than crash mid-race.
+    """
+    try:
+        return COMPOUNDS.index(compound)
+    except ValueError:
+        return COMPOUNDS.index("MEDIUM")
+
+
+def _sample_caution_lengths(cause: str, elapsed: int, n: int, seed: int | None) -> np.ndarray:
+    """Per-rollout REMAINING laps of an in-progress caution, conditioned on `elapsed`.
+
+    Uses the historical SC/VSC duration model (src.simulation.sc_model) when its
+    artifact is present; otherwise falls back to a small built-in distribution so
+    the engine runs standalone. Each value is floored at 1.
+    """
+    rng = np.random.default_rng(seed)
+    try:                                           # pragma: no cover - artifact path
+        from src.simulation.sc_model import load_distributions, sample_remaining
+        dist = load_distributions()
+        return np.array(
+            [int(sample_remaining(cause, elapsed, dist=dist, rng=rng)) for _ in range(n)],
+            dtype=int,
+        )
+    except Exception:
+        lengths = np.array(_CAUTION_FALLBACK.get(cause, _CAUTION_FALLBACK["SC"]))
+        eligible = lengths[lengths >= max(elapsed, 1)]
+        if eligible.size == 0:
+            return np.ones(n, dtype=int)
+        totals = rng.choice(eligible, size=n)
+        return np.maximum(totals - elapsed, 1).astype(int)
 
 
 # ---------------------------------------------------------------------------
@@ -92,6 +146,7 @@ class DriverSpec:
     strategy: list[tuple[int, str]] = field(default_factory=list)  # (pit at END of lap, compound)
     grid_pos: int = 1
     grid_gap_s: float = 0.0                  # cumulative-time handicap at the start
+    start_age: int = 2                       # tyre age on the opening lap (>2 = mid-stint resume)
 
 
 @dataclass
@@ -104,6 +159,7 @@ class RaceSpec:
     sigma_lap_s: float | None = None         # None -> recalibrated TFT band width
     overtake_prob: float | None = None       # None -> circuit-class table
     track_temp: float | None = None          # None -> curve's historical temp (Phase 9.4)
+    caution: tuple[str, int] | None = None   # (cause, laps_elapsed) of an in-progress flag (Phase 10.4)
 
 
 @dataclass
@@ -159,11 +215,11 @@ def _stint_schedule(spec: RaceSpec, d: DriverSpec) -> tuple[np.ndarray, np.ndarr
     age  = np.empty(spec.n_laps + 1, dtype=int)
     stint = np.empty(spec.n_laps + 1, dtype=int)
     pits = dict(d.strategy)
-    c, a, s = COMPOUNDS.index(d.start_compound), 2, 0
+    c, a, s = _comp_idx(d.start_compound), max(int(d.start_age), 1), 0
     for lap in range(1, spec.n_laps + 1):
         comp[lap], age[lap], stint[lap] = c, a, s
         if lap in pits:
-            c, a, s = COMPOUNDS.index(pits[lap]), 2, s + 1
+            c, a, s = _comp_idx(pits[lap]), 2, s + 1
         else:
             a += 1
     return comp[1:], age[1:], stint[1:]
@@ -239,7 +295,31 @@ def simulate(
         + deg_mid.unsqueeze(0) + deg_noise
         + lap_noise
         + is_pit.unsqueeze(0) * (pit_loss + pit_noise)
-    ).to(dev)                                                            # [R,D,L]
+    )                                                                    # [R,D,L]
+
+    # ---- in-progress caution: overlay SC/VSC pace on the opening laps --------
+    # Per rollout we sample how many more laps the flag lasts (conditioned on how
+    # long it has already run). On those laps the whole field runs at one dictated
+    # pace (overtaking frozen), pitting is cheaper, and at the Safety-Car restart
+    # the field is bunched nose-to-tail. is_restart marks each rollout's final
+    # caution lap; the bunching is applied inside the lap loop below.
+    is_restart = torch.zeros(R, L, dtype=torch.bool)
+    bunch = False
+    if spec.caution is not None:
+        cause, elapsed = spec.caution[0], int(spec.caution[1])
+        rem = torch.tensor(_sample_caution_lengths(cause, elapsed, R, seed), dtype=torch.long)
+        lap_idx = torch.arange(L)
+        caution_active = lap_idx.view(1, L) < rem.view(R, 1)             # [R,L]
+        is_restart = (lap_idx.view(1, L) == (rem.view(R, 1) - 1)) & (rem.view(R, 1) <= L)
+        field_pace = float(base.mean()) * CAUTION_PACE_MULT.get(cause, 1.40)
+        caution_lap_time = (
+            field_pace
+            + is_pit.unsqueeze(0) * (pit_loss * CAUTION_PIT_FACTOR.get(cause, 0.55) + pit_noise)
+        )                                                                # [R,D,L]
+        lap_time = torch.where(caution_active.unsqueeze(1), caution_lap_time, lap_time)
+        bunch = cause in BUNCH_CAUSES
+    lap_time = lap_time.to(dev)
+    is_restart = is_restart.to(dev)
 
     # ---- lap-by-lap with overtaking friction ---------------------------------
     cum = torch.tensor([d.grid_gap_s for d in spec.drivers]).expand(R, D).clone().to(dev)
@@ -262,6 +342,16 @@ def simulate(
             resolved.scatter_(1, idx.unsqueeze(1), t.unsqueeze(1))
             min_ahead = torch.maximum(min_ahead, t)
         cum = resolved
+
+        # Safety-Car restart: on each rollout's final caution lap, concertina the
+        # field to a fixed nose-to-tail spacing, preserving track order.
+        if bunch:
+            rmask = is_restart[:, lap]                                   # [R]
+            if bool(rmask.any()):
+                ranks = torch.argsort(torch.argsort(cum, dim=1), dim=1).to(cum.dtype)
+                leader = cum.min(dim=1, keepdim=True).values
+                bunched = leader + ranks * SC_BUNCH_GAP_S
+                cum = torch.where(rmask.unsqueeze(1), bunched, cum)
 
     # ---- aggregate ------------------------------------------------------------
     race_time = cum.cpu().numpy()
