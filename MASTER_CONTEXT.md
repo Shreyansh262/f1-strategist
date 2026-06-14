@@ -684,6 +684,64 @@ all 2026 races run by then; final cross-era eval; update every number in README 
 3–5 page technical report PDF: problem → architecture → honest results → limitations → what-I'd-
 do-differently. Record a 2-min demo GIF of the dashboard.
 
+### 10.8 Phase 8+ — Robustness, weather & live (ROADMAP, started 2026-06-14)
+**WHY:** User review surfaced that all three modes run on historical parquet only, the
+"modes" are mislabelled vs what they do, and race-quality strategy depends on weather/temp
+and flags, which the sim ignores. This phase makes the product honest + robust + (eventually)
+live. Tracked here as a done/left checklist; targeted a few items at a time. Kaggle-bound
+training steps are flagged — user runs them and returns artifacts.
+
+**Phase 8 — Honesty & quick wins (LOCAL, S):  ALL DONE 2026-06-14.**
+- [x] 8.0  Cards equal-height (theme.py flex-stretch); Pre-Race driver cap 20→24 default 22 (2026 = 22 cars).  DONE 2026-06-14.
+- [x] 8.1  Sidebar nav now "Dashboard / Pre-Race / Race Replay / Post-Race" via `st.navigation`/`st.Page` in dashboard/app.py.
+           DONE 2026-06-14. Home content moved into home() fn; single set_page_config in app.py; page scripts no longer call
+           T.page_config (st.navigation runs them after the entrypoint). app.py STAYS HF entrypoint. Deploy bundle pins
+           streamlit==1.55.0 (st.navigation ✓) + copytree bundles dashboard/ wholesale, so no export change needed.
+           Verified: AppTest of app.py (home) + all 3 pages standalone = 0 exceptions.
+- [x] 8.2  Per-circuit official race-lap table in Pre-Race; auto-fill n_laps, show slider only for unknown circuits.  DONE 2026-06-14.
+- [x] 8.3  Plain-language "how to read this map" caption on the MDP pit-map heatmap.  DONE 2026-06-14. (Broader chart-clarity pass still open.)
+- [x] 8.4  Relabelled Live page "Race replay" (honest, historical; notes true-live is a separate upcoming mode).  DONE 2026-06-14.
+           (Note: the what-if/strategy audit already lives in Post-Race; no move needed.)
+- [x] 8.5  Pre-Race base pace from recent form, NOT the race's own laps.  DONE 2026-06-14. New theme.form_base_pace():
+           base = circuit_baseline (field green median from most recent PRIOR running of the circuit) + driver form_delta
+           (median over last 5 races of driver-green-median − that race's field-median = circuit-neutral gap-to-field).
+           Entry list + grid taken from target race (known pre-race); only in-race pace withheld. Rookies/new circuits fall
+           back (field-median delta / this-race baseline, flagged via baseline_src caption). Post-Race still uses
+           green_base_pace (legitimately retrospective). Removes the circularity the user spotted.
+- [x] 8.6  Surface session Air/Track temp on Pre-Race + Replay + Post-Race.  DONE 2026-06-14. (Median per session — accepted.)
+
+**Phase 9 — Weather/temperature robustness (LOCAL + 1 Kaggle refit, M–L). THE standout upgrade:**
+- [ ] 9.1  Static circuit→lat/long table (~24 circuits, keyed by EventName/CircuitKey).
+- [ ] 9.2  Open-Meteo client (FREE, no API key): Forecast API (≤16 days, upcoming races) + Archive/ERA5 (historical backfill).
+           Channels: temperature_2m, precipitation/rain, relative_humidity_2m, wind_speed_10m, shortwave_radiation.
+           Track temp not provided by any free API → approximate from air temp + solar radiation (simple offset model).
+- [ ] 9.3  Enrich weather ingest: add Rainfall/Humidity/Wind (session medians, per user) alongside existing Air/Track temp.
+- [ ] 9.4  **Temp-aware tyre degradation** — refit curves with TrackTemp as a covariate (or a temp-scaling multiplier on the
+           existing per-circuit×era curves). KAGGLE SCRIPT — user runs, returns refitted tyre_curves artifact. Core of the upgrade:
+           lets us answer "this circuit, but colder/hotter/wet → tyres last longer / push harder / more stops".
+- [ ] 9.5  Pre-Race weather controls (Air/Track temp + wet/dry toggle, or a "fetch forecast" button) → feed into the sim.
+- [ ] 9.6  Show the fetched forecast on Pre-Race.
+
+**Phase 10 — Live race (OpenF1) + flags (L). User: do BOTH live and replay+env-analysis:**
+- [ ] 10.1 OpenF1 client (api.openf1.org, free JSON): positions, intervals, laps, stints, weather, race_control (flags).
+- [ ] 10.2 Live state assembler → seed a RaceSpec mid-race (current lap N, retirements, gaps, fitted tyres).
+- [ ] 10.3 "Resume from lap N" projection: re-run the existing Monte-Carlo engine from the live state to project the finish.
+           (Engine already takes arbitrary grid gaps + per-driver specs — reuse, not rewrite.)
+- [ ] 10.4 Flag-following in the sim: under SC → compress gaps, zero overtakes, reduced pace, cheaper pit; under yellow → no
+           overtake in sector. **Predict when the flag ENDS** (user requirement — do not blind-follow): empirical SC/VSC
+           duration distribution from historical TrackStatus (per circuit/cause), sampled for remaining caution laps.
+- [ ] 10.5 Live page UI: true-live mode (OpenF1) AND a relabelled replay-with-env-analysis mode.
+
+**Phase 11 — Future / parked (documented, not built now):**
+- WET/INTERMEDIATE compounds across tyre curves + MDP + sim (currently S/M/H only). Separate, larger; touches three models.
+- **Battery / ERS per-corner strategy (STRETCH, future).** Technique: 2026 PU is ~50% electric with manual override
+  deployment + active aero (X-mode/Z-mode). A real model is a per-corner energy-management optimisation — decide harvest
+  vs deploy per corner under a per-lap energy budget (≈4 MJ deploy / lap), coupled to active-aero state. This is **sub-lap**
+  and needs **telemetry** (speed/throttle/brake/DRS/ERS channels, thousands of samples/lap/car), which we deliberately do
+  NOT ingest (`telemetry=False` in ingest.py) because our whole architecture is lap-level and telemetry is large-cost /
+  zero-benefit at that granularity. ERS therefore requires a new telemetry ingestion pipeline + a per-corner energy model —
+  a distinct project, parked until the lap-level product is complete.
+
 ---
 
 ## 11. The models (architecture detail)

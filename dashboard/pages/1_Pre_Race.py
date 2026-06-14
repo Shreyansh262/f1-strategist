@@ -22,9 +22,27 @@ import streamlit as st
 
 import theme as T
 
-T.page_config("Pre-Race · F1 Strategist")
 T.apply_theme()
 T.register_plotly_template()
+
+# Official race-lap distance per circuit (keyed by CircuitKey == FastF1 EventName).
+# Used to auto-fill race length so the user is not asked for a value that is fixed.
+# Unknown circuits fall back to a manual slider.
+CIRCUIT_LAPS = {
+    "Bahrain Grand Prix": 57, "Saudi Arabian Grand Prix": 50,
+    "Australian Grand Prix": 58, "Japanese Grand Prix": 53,
+    "Chinese Grand Prix": 56, "Miami Grand Prix": 57,
+    "Emilia Romagna Grand Prix": 63, "Monaco Grand Prix": 78,
+    "Canadian Grand Prix": 70, "Spanish Grand Prix": 66,
+    "Austrian Grand Prix": 71, "British Grand Prix": 52,
+    "Hungarian Grand Prix": 70, "Belgian Grand Prix": 44,
+    "Dutch Grand Prix": 72, "Italian Grand Prix": 53,
+    "Azerbaijan Grand Prix": 51, "Singapore Grand Prix": 62,
+    "United States Grand Prix": 56, "Mexico City Grand Prix": 71,
+    "São Paulo Grand Prix": 71, "Las Vegas Grand Prix": 50,
+    "Qatar Grand Prix": 57, "Abu Dhabi Grand Prix": 58,
+    "French Grand Prix": 53,
+}
 
 # Heavy src imports guarded so the page degrades gracefully.
 _ENGINE_OK = True
@@ -73,14 +91,18 @@ with st.sidebar:
     )
     circuit = circuits[rnd]
 
-    n_drivers = st.slider("Drivers in field", 4, 20, 10)
+    n_drivers = st.slider("Drivers in field", 4, 24, 22)
     n_rollouts = st.slider("Monte-Carlo rollouts", 200, 3000, 1000, step=200)
-    n_laps = st.slider("Race laps", 30, 78, 57)
+    if circuit in CIRCUIT_LAPS:
+        n_laps = CIRCUIT_LAPS[circuit]
+        st.caption(f"Race distance: **{n_laps} laps** (official, fixed for this circuit).")
+    else:
+        n_laps = st.slider("Race laps", 30, 78, 57)
 
-# base pace from the chosen race
-base = T.green_base_pace(season, rnd)
+# Pre-race base pace from each driver's recent form — NOT this race's own laps.
+base = T.form_base_pace(season, rnd)
 if base.empty:
-    T.warn("No usable green-flag laps for this race to derive base pace.")
+    T.warn("Not enough prior data to derive a pre-race base pace for this race.")
     st.stop()
 
 field = base.head(n_drivers).reset_index(drop=True)
@@ -90,7 +112,8 @@ field = base.head(n_drivers).reset_index(drop=True)
 # ---------------------------------------------------------------------------
 
 T.section("Grid", f"{circuit} · {season}",
-          sub="Base pace = green-flag median lap, fuel- and tyre-neutral. Grid from lap-1 order.")
+          sub="Base pace = each driver's recent form (last 5 races, gap to field) on this "
+              "circuit's baseline — no laps from this race used. Grid from lap-1 order.")
 
 lineup = field[["Driver", "Team", "base_pace_s", "grid_pos"]].copy()
 lineup["base_pace_s"] = lineup["base_pace_s"].round(3)
@@ -99,6 +122,24 @@ st.dataframe(
     lineup.rename(columns={"base_pace_s": "base pace (s)", "grid_pos": "grid"}),
     width="stretch", hide_index=True,
 )
+if "baseline_src" in field.columns and len(field):
+    st.caption(
+        f"Circuit baseline from: **{field['baseline_src'].iloc[0]}**. "
+        "Drivers with no recent history fall back to the field-median form delta."
+    )
+
+# Session weather (median per race — in-race temp does not swing drastically).
+_wx = T.load_race(season, rnd)
+if _wx is not None and not _wx.empty:
+    _at = _wx["AirTemp"].dropna() if "AirTemp" in _wx.columns else None
+    _tt = _wx["TrackTemp"].dropna() if "TrackTemp" in _wx.columns else None
+    _bits = []
+    if _at is not None and len(_at):
+        _bits.append(f"Air **{_at.median():.0f}°C**")
+    if _tt is not None and len(_tt):
+        _bits.append(f"Track **{_tt.median():.0f}°C**")
+    if _bits:
+        st.caption("Session conditions: " + " · ".join(_bits))
 
 ego = st.selectbox("Ego driver (strategy target)", lineup["Driver"].tolist())
 
@@ -269,6 +310,13 @@ try:
     ))
     fig_pol.update_layout(xaxis_title="Lap", yaxis_title=f"Tyre age on {pol_compound}")
     st.plotly_chart(T.style_fig(fig_pol, 400), width="stretch")
+    st.markdown(
+        "**How to read this map:** each cell is the optimal action for a single car "
+        "at that point in the race — the colour says what to do when your tyre has reached "
+        "that age (y-axis) on that lap (x-axis): **stay out**, or **pit to SOFT / MEDIUM / HARD**. "
+        "Reading up a column shows when the optimal call flips from staying out to pitting — "
+        "that boundary is your pit window."
+    )
     st.caption(f"MDP optimum from start={pol_compound}: "
                f"{res['n_stops']} stop(s) — {res['stops']} · "
                f"avg lap {res['avg_lap_s']:.2f}s")

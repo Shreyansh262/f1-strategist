@@ -22,7 +22,6 @@ import streamlit as st
 
 import theme as T
 
-T.page_config("Post-Race · F1 Strategist")
 T.apply_theme()
 T.register_plotly_template()
 
@@ -65,6 +64,15 @@ circuit = str(df["CircuitKey"].iloc[0])
 era = T.era_for_season(season)
 n_laps = int(df["LapNumber"].max())
 st.markdown(f"### {circuit} · {season}")
+_at = df["AirTemp"].dropna() if "AirTemp" in df.columns else None
+_tt = df["TrackTemp"].dropna() if "TrackTemp" in df.columns else None
+_wx_bits = []
+if _at is not None and len(_at):
+    _wx_bits.append(f"Air **{_at.median():.0f}°C**")
+if _tt is not None and len(_tt):
+    _wx_bits.append(f"Track **{_tt.median():.0f}°C**")
+if _wx_bits:
+    st.caption("Session conditions: " + " · ".join(_wx_bits))
 
 
 # ---------------------------------------------------------------------------

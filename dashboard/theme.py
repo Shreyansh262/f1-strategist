@@ -18,6 +18,7 @@ import re
 from pathlib import Path
 
 import joblib
+import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.io as pio
@@ -139,6 +140,14 @@ div[data-testid="stMetricValue"] {{
     font-size: 1.9rem;
 }}
 div[data-testid="stMetricDelta"] {{ font-size: 0.8rem; }}
+
+/* equal-height card rows: make each column a flex item that stretches,
+   so f1-card height:100% fills the tallest card in the row */
+div[data-testid="stHorizontalBlock"] {{ align-items: stretch; }}
+div[data-testid="stColumn"] {{ display: flex; }}
+div[data-testid="stColumn"] > div,
+div[data-testid="stColumn"] [data-testid="stVerticalBlockBorderWrapper"],
+div[data-testid="stColumn"] [data-testid="stVerticalBlock"] {{ width: 100%; height: 100%; }}
 
 /* info / panel card */
 .f1-card {{
@@ -377,3 +386,121 @@ def green_base_pace(season: int, rnd: int) -> pd.DataFrame:
     agg["grid_pos"] = agg["Driver"].map(grid).fillna(99).astype(int)
     agg = agg.dropna(subset=["base_pace_s"])
     return agg.sort_values("base_pace_s").reset_index(drop=True)
+
+
+# ---------------------------------------------------------------------------
+# Pre-race base pace from recent FORM (does not use the target race's own laps)
+# ---------------------------------------------------------------------------
+
+@st.cache_data(show_spinner=False)
+def _race_green_field(season: int, rnd: int):
+    """(per-driver green median df, field green median) for one race, or None.
+
+    Helper for form_base_pace. The per-driver median minus the field median is a
+    circuit-neutral 'how fast was this driver vs the field that day' signal.
+    """
+    df = load_race(season, rnd)
+    if df is None or df.empty:
+        return None
+    green = df[
+        (df["TrackStatus"] == "1")
+        & df["PitInTime"].isna() & df["PitOutTime"].isna()
+        & df["LapTimeSeconds"].between(60, 150)
+    ]
+    if green.empty:
+        return None
+    per = (green.groupby(["Driver", "Team"])["LapTimeSeconds"]
+           .median().reset_index(name="med"))
+    return per, float(green["LapTimeSeconds"].median())
+
+
+@st.cache_data(show_spinner=False)
+def _races_before(season: int, rnd: int) -> list[tuple[int, int]]:
+    """All (season, round) strictly before the target race, newest first."""
+    out = []
+    for s in list_seasons():
+        for r in list_rounds(s):
+            if (s, r) < (season, rnd):
+                out.append((s, r))
+    out.sort(reverse=True)
+    return out
+
+
+@st.cache_data(show_spinner=False)
+def form_base_pace(season: int, rnd: int, n_recent: int = 5) -> pd.DataFrame:
+    """Per-driver base pace for a PRE-race plan, WITHOUT using the target race's
+    own laps (removes the circular "plan a race we already have the laps for").
+
+        base_pace_s(driver) = circuit_baseline + recent_form_delta(driver)
+
+      - recent_form_delta: median over the driver's last `n_recent` races of
+        (their green median − that race's field green median). Gap-to-field, so it
+        is comparable across circuits of very different lap length.
+      - circuit_baseline: field green median from the most recent PRIOR running of
+        this circuit. Falls back to the target race's field median ONLY if the
+        circuit has never been raced before in the dataset (flagged in baseline_src).
+
+    Entry list + grid come from the target race — both legitimately known before
+    lights-out (entries from the weekend, grid from qualifying); only in-race PACE
+    is withheld. Returns DataFrame[Driver, Team, base_pace_s, grid_pos, n_form, baseline_src].
+    """
+    target = load_race(season, rnd)
+    if target is None or target.empty:
+        return pd.DataFrame()
+
+    entries = target[["Driver", "Team"]].drop_duplicates()
+    lap1 = (target[target["LapNumber"] == 1][["Driver", "LapTimeSeconds"]]
+            .dropna().sort_values("LapTimeSeconds"))
+    grid = {d: i + 1 for i, d in enumerate(lap1["Driver"].tolist())}
+
+    priors = _races_before(season, rnd)
+    drivers = list(entries["Driver"])
+    deltas: dict[str, list[float]] = {d: [] for d in drivers}
+    counts: dict[str, int] = {d: 0 for d in drivers}
+    for s, r in priors:
+        if all(counts[d] >= n_recent for d in drivers):
+            break
+        res = _race_green_field(s, r)
+        if res is None:
+            continue
+        per, fmed = res
+        for _, row in per.iterrows():
+            d = row["Driver"]
+            if d in counts and counts[d] < n_recent:
+                deltas[d].append(float(row["med"]) - fmed)
+                counts[d] += 1
+
+    form_delta = {d: (float(np.median(v)) if v else np.nan) for d, v in deltas.items()}
+    finite = [v for v in form_delta.values() if pd.notna(v)]
+    fallback_delta = float(np.median(finite)) if finite else 0.0
+
+    circuit = str(target["CircuitKey"].iloc[0])
+    baseline = None
+    baseline_src = "most recent prior running of this circuit"
+    for s, r in priors:
+        cdf = load_race(s, r)
+        if cdf is None or cdf.empty or str(cdf["CircuitKey"].iloc[0]) != circuit:
+            continue
+        res = _race_green_field(s, r)
+        if res is not None:
+            baseline = res[1]
+            break
+    if baseline is None:
+        res = _race_green_field(season, rnd)
+        baseline = res[1] if res is not None else 90.0
+        baseline_src = "this race (circuit has no prior running in the data)"
+
+    rows = []
+    for _, e in entries.iterrows():
+        d = e["Driver"]
+        fd = form_delta.get(d, np.nan)
+        if pd.isna(fd):
+            fd = fallback_delta
+        rows.append({
+            "Driver": d, "Team": e["Team"],
+            "base_pace_s": baseline + fd,
+            "grid_pos": grid.get(d, 99),
+            "n_form": counts.get(d, 0),
+            "baseline_src": baseline_src,
+        })
+    return pd.DataFrame(rows).sort_values("base_pace_s").reset_index(drop=True)

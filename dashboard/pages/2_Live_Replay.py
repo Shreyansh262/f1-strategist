@@ -22,7 +22,6 @@ import streamlit as st
 
 import theme as T
 
-T.page_config("Live Replay · F1 Strategist")
 T.apply_theme()
 T.register_plotly_template()
 
@@ -37,8 +36,9 @@ except Exception as e:                                    # pragma: no cover
     _LAPMODEL_OK = False
     _LAP_ERR = str(e)
 
-st.markdown("## Live replay")
-T.section("Replay", sub="Re-run any 2022–2026 Grand Prix lap by lap. Historical data only.")
+st.markdown("## Race replay")
+T.section("Replay", sub="Step through any completed 2022–2026 Grand Prix lap by lap. "
+                        "Historical data only — true live timing is a separate upcoming mode.")
 
 
 # ---------------------------------------------------------------------------
@@ -66,6 +66,15 @@ era = T.era_for_season(season)
 max_lap = int(df["LapNumber"].max())
 
 st.markdown(f"### {circuit} · {season}")
+_at = df["AirTemp"].dropna() if "AirTemp" in df.columns else None
+_tt = df["TrackTemp"].dropna() if "TrackTemp" in df.columns else None
+_wx_bits = []
+if _at is not None and len(_at):
+    _wx_bits.append(f"Air **{_at.median():.0f}°C**")
+if _tt is not None and len(_tt):
+    _wx_bits.append(f"Track **{_tt.median():.0f}°C**")
+if _wx_bits:
+    st.caption("Session conditions: " + " · ".join(_wx_bits))
 
 cur_lap = st.slider("Lap", 1, max_lap, min(max_lap, max_lap // 2))
 
