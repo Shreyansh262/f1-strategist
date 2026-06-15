@@ -1,8 +1,13 @@
-"""Live Replay — step through a historical race lap by lap.
+"""Race Replay — step through a past race lap by lap, then project the finish.
 
 Pure historical replay from data/raw parquet, no live-timing dependency:
 position/gap chart up to the current lap, per-driver tyre-stint timeline,
 actual-vs-predicted lap time with the calibration ribbon, and pit-window alerts.
+
+It also absorbs what used to be the Live page's "Replay projection" tab, so a
+past race has ONE home: from the selected lap you can (1) project the finishing
+order by simulating the remaining laps thousands of times, and (2) play a
+strategy what-if — change ONE car's remaining plan and see if it finishes better.
 """
 from __future__ import annotations
 
@@ -36,9 +41,13 @@ except Exception as e:                                    # pragma: no cover
     _LAPMODEL_OK = False
     _LAP_ERR = str(e)
 
+# Engine compounds the user can pick for a what-if (wet two are "indicative").
+_PICKABLE_COMPOUNDS = ["SOFT", "MEDIUM", "HARD", "INTERMEDIATE", "WET"]
+
 st.markdown("## Race replay")
-T.section("Replay", sub="Step through any completed 2022–2026 Grand Prix lap by lap. "
-                        "Historical data only — true live timing is a separate upcoming mode.")
+T.section("Replay", sub="Step through any completed 2022–2026 Grand Prix lap by lap, "
+                        "then project how it finishes from the lap you're on. "
+                        "Historical data only — true live timing is a separate mode.")
 
 
 # ---------------------------------------------------------------------------
@@ -128,6 +137,12 @@ for i, drv in enumerate(top_drivers):
 fig_gap.update_layout(xaxis_title="Lap", yaxis_title="Gap to leader (s)")
 fig_gap.update_yaxes(autorange="reversed")
 st.plotly_chart(T.style_fig(fig_gap, 420), width="stretch")
+st.caption(
+    "How to read: the leader is the flat red line along the top at 0s. Every other line is how "
+    "many seconds behind the leader that driver is on each lap — the axis is flipped so **higher "
+    "on the chart = closer to the lead**. A line diving downward = losing time (a pit stop, traffic, "
+    "or a slow lap); a line climbing back up = catching the car ahead."
+)
 
 
 # ---------------------------------------------------------------------------
@@ -171,9 +186,9 @@ st.plotly_chart(T.style_fig(fig_stint, max(320, 26 * len(order_drivers))), width
 # Actual vs predicted lap time + calibration ribbon
 # ---------------------------------------------------------------------------
 
-T.section("Model", "Actual vs predicted",
-          sub="Selected driver's measured lap time against the LightGBM prediction, "
-              "with the recalibrated ±band.")
+T.section("Pace", "Actual vs lap-time prediction",
+          sub="The selected driver's measured lap time against our lap-time prediction, "
+              "with the expected ±band around it.")
 
 sel_driver = st.selectbox("Driver", order["Driver"].tolist())
 
@@ -256,3 +271,232 @@ if alerts:
     st.dataframe(adf.style.apply(_style, axis=1), width="stretch", hide_index=True)
 else:
     st.caption("No slick-tyre running drivers at this lap, or tyre curves unavailable.")
+
+
+# ===========================================================================
+# Project the finish from here (absorbed from the old Live → Replay tab)
+# ===========================================================================
+
+from src.simulation.live_state import from_replay
+from src.simulation.engine import DriverSpec, RaceSpec, simulate
+
+# One seed for every simulation on this page — makes the what-if a fair,
+# paired (common-random-numbers) comparison against the baseline.
+_SIM_SEED = 42
+_N_ROLLOUTS = 1500
+
+
+def _build_spec():
+    """Remaining-race RaceSpec from the selected lap, or None with a reason shown."""
+    spec = from_replay(season, rnd, cur_lap)
+    if spec is None:
+        T.warn("Could not build a race state at this lap. Try a different lap or round.")
+    return spec
+
+
+def _flag_banner(spec) -> None:
+    if spec.caution is not None:
+        cause, elapsed = spec.caution
+        dot = {"SC": "🟡", "VSC": "🟠", "RED": "🔴", "YELLOW": "🟡"}.get(cause, "⚠️")
+        T.warn(
+            f"{dot} <strong>{cause}</strong> flying for {elapsed} lap(s) — the projection "
+            "samples when it ends from how long past cautions lasted."
+        )
+    else:
+        st.caption("🟢 Green flag at this lap.")
+
+
+def _win_bar(res, height: int = 400):
+    """Horizontal win-chance bar chart for the top ~10 by average finish."""
+    bar_df = res.table().head(10).copy()
+    bar_df["win_pct"] = (bar_df["win_prob"] * 100).round(1)
+    bar_df = bar_df.sort_values("win_pct")
+    fig = go.Figure()
+    for _, row in bar_df.iterrows():
+        color = T.RED if row["driver"] == bar_df.iloc[-1]["driver"] else T.GREY
+        fig.add_trace(go.Bar(
+            y=[row["driver"]], x=[row["win_pct"]], orientation="h",
+            marker=dict(color=color), showlegend=False,
+            hovertemplate=f"{row['driver']}: {row['win_pct']:.1f}%<extra></extra>",
+        ))
+    fig.update_layout(xaxis_title="Win chance (%)", yaxis_title="")
+    return T.style_fig(fig, height)
+
+
+T.section("Projection", "Project the finish from here",
+          sub="Take the race exactly as it stands on this lap and simulate the laps that "
+              "are left, many times over, to see how it most likely ends.")
+
+if curves is None:
+    T.warn("Tyre curves unavailable — run the tyre fit to enable projections.")
+else:
+    project_clicked = st.button("PROJECT THE FINISH FROM HERE", key="project_btn")
+    if project_clicked:
+        spec = _build_spec()
+        if spec is not None:
+            _flag_banner(spec)
+            with st.spinner("Simulating the remaining laps thousands of times…"):
+                res = simulate(spec, n_rollouts=_N_ROLLOUTS, seed=_SIM_SEED,
+                               device="cpu", curves=curves)
+            st.markdown("#### Predicted finishing order")
+            st.dataframe(
+                T.friendly_finish_table(res.table()),
+                hide_index=True, width="stretch",
+                column_config={
+                    col: st.column_config.Column(help=T.FRIENDLY_FINISH_HELP[col])
+                    for col in T.FRIENDLY_FINISH_HELP
+                },
+            )
+            st.caption(
+                f"From lap {cur_lap}, simulating the remaining {spec.n_laps} laps "
+                f"{_N_ROLLOUTS:,} times — any flag currently flying is included."
+            )
+            st.markdown("#### Win chance")
+            st.plotly_chart(_win_bar(res), width="stretch")
+    else:
+        st.caption("Press the button to run the projection (it isn't run on every change).")
+
+
+# ===========================================================================
+# Strategy what-if: change ONE car's remaining plan from here
+# ===========================================================================
+
+T.section("What-if", "Strategy what-if",
+          sub="What if one car pitted differently from this lap on? Pick a car, give it a "
+              "new plan for the rest of the race, and compare it fairly against staying out.")
+
+if curves is None:
+    st.caption("Tyre curves unavailable — what-if needs them to project the rest of the race.")
+elif cur_lap >= max_lap:
+    st.caption("The race is at its final lap here — move the lap slider back to try a what-if.")
+else:
+    # Driver to experiment with (default = current leader).
+    wi_drivers = order["Driver"].tolist()
+    wi_driver = st.selectbox("Car to change", wi_drivers, key="wi_driver")
+
+    # Remaining strategy controls — pit laps are ABSOLUTE race laps the user reads
+    # off the timeline; we convert them to spec-relative laps before simulating.
+    c1, c2 = st.columns(2)
+    with c1:
+        pit1 = st.slider("First pit on lap", cur_lap + 1, max_lap,
+                         min(max_lap, cur_lap + max(1, (max_lap - cur_lap) // 2)),
+                         key="wi_pit1")
+        comp1 = st.selectbox("…onto compound", _PICKABLE_COMPOUNDS, index=2, key="wi_comp1")
+    with c2:
+        two_stop = st.checkbox("Add a second stop", key="wi_two_stop")
+        pit2 = st.slider("Second pit on lap", pit1 + 1, max_lap,
+                         min(max_lap, pit1 + max(1, (max_lap - pit1) // 2)),
+                         key="wi_pit2", disabled=not two_stop)
+        comp2 = st.selectbox("…onto compound", _PICKABLE_COMPOUNDS, index=1,
+                             key="wi_comp2", disabled=not two_stop)
+
+    st.caption(
+        "INTERMEDIATE / WET are available but only indicative — the wet tyre model is "
+        "approximate."
+    )
+
+    whatif_clicked = st.button("RUN WHAT-IF", key="whatif_btn")
+    if whatif_clicked:
+        spec = _build_spec()
+        if spec is not None:
+            _flag_banner(spec)
+
+            # Spec laps are numbered 1..n_laps over the REMAINING race, so an
+            # absolute race lap L maps to spec lap (L - cur_lap).
+            new_stops = [(pit1 - cur_lap, comp1)]
+            if two_stop and pit2 > pit1:
+                new_stops.append((pit2 - cur_lap, comp2))
+            new_stops = [(lap, c) for lap, c in new_stops if 1 <= lap <= spec.n_laps]
+
+            try:
+                ego_idx = next(i for i, d in enumerate(spec.drivers)
+                               if d.driver == wi_driver)
+            except StopIteration:
+                ego_idx = None
+
+            if ego_idx is None:
+                T.warn(f"{wi_driver} is not running at this lap.")
+            elif not new_stops:
+                T.warn("The chosen pit lap(s) fall outside the remaining race — "
+                       "pick laps after the current lap.")
+            else:
+                # BASELINE = the field as-is (every car continues on its current
+                # tyres, no further stops). WHAT-IF = identical field except the
+                # chosen car gets the new plan. Both are simulated with the SAME
+                # seed, so every random draw (pace noise, degradation, pit noise,
+                # overtakes, caution length) is shared lap-for-lap — the only
+                # difference between the two outcomes is the strategy, not luck.
+                base_drivers = [DriverSpec(**d.__dict__) for d in spec.drivers]
+                base_spec = RaceSpec(**{**spec.__dict__, "drivers": base_drivers})
+
+                wi_drivers_spec = [DriverSpec(**d.__dict__) for d in spec.drivers]
+                wi_drivers_spec[ego_idx].strategy = new_stops
+                wi_spec = RaceSpec(**{**spec.__dict__, "drivers": wi_drivers_spec})
+
+                with st.spinner("Simulating both plans on the same dice…"):
+                    base_res = simulate(base_spec, n_rollouts=_N_ROLLOUTS,
+                                        seed=_SIM_SEED, device="cpu", curves=curves)
+                    wi_res = simulate(wi_spec, n_rollouts=_N_ROLLOUTS,
+                                      seed=_SIM_SEED, device="cpu", curves=curves)
+
+                base_avg = base_res.mean_finish[wi_driver]
+                wi_avg = wi_res.mean_finish[wi_driver]
+                # Lower finish number = better, so improvement = baseline − whatif.
+                delta = base_avg - wi_avg
+
+                plan_txt = " then ".join(
+                    f"lap {lap + cur_lap} → {c}" for lap, c in new_stops
+                )
+                st.markdown(f"#### What if **{wi_driver}** pits: {plan_txt}")
+
+                m1, m2, m3 = st.columns(3)
+                m1.metric("Avg finish — stay out", f"{base_avg:.2f}")
+                m2.metric("Avg finish — new plan", f"{wi_avg:.2f}",
+                          delta=f"{delta:+.2f} places",
+                          delta_color="normal")
+                if delta > 0.05:
+                    verdict = f"Better by ~{delta:.2f} place(s)"
+                elif delta < -0.05:
+                    verdict = f"Worse by ~{abs(delta):.2f} place(s)"
+                else:
+                    verdict = "About the same"
+                m3.metric("Verdict", verdict)
+
+                st.caption(
+                    "Positive = the new plan finishes higher up on average. Both plans were "
+                    "simulated on the SAME random draws (same seed), so this difference is the "
+                    "strategy, not luck — this is purely 'what if they pit differently from here'."
+                )
+
+                # Side-by-side win / podium chance for the chosen car.
+                cmp_df = pd.DataFrame([
+                    {"plan": "Stay out",
+                     "win_prob": base_res.win_prob[wi_driver],
+                     "podium_prob": base_res.podium_prob[wi_driver],
+                     "mean_finish": base_avg},
+                    {"plan": "New plan",
+                     "win_prob": wi_res.win_prob[wi_driver],
+                     "podium_prob": wi_res.podium_prob[wi_driver],
+                     "mean_finish": wi_avg},
+                ])
+                st.markdown("#### This car's chances, side by side")
+                st.dataframe(
+                    T.friendly_finish_table(cmp_df),
+                    hide_index=True, width="stretch",
+                    column_config={
+                        col: st.column_config.Column(help=T.FRIENDLY_FINISH_HELP[col])
+                        for col in T.FRIENDLY_FINISH_HELP
+                    },
+                )
+
+                st.markdown("#### Full field under the new plan")
+                st.dataframe(
+                    T.friendly_finish_table(wi_res.table()),
+                    hide_index=True, width="stretch",
+                    column_config={
+                        col: st.column_config.Column(help=T.FRIENDLY_FINISH_HELP[col])
+                        for col in T.FRIENDLY_FINISH_HELP
+                    },
+                )
+    else:
+        st.caption("Set a new plan above and press the button to compare it against staying out.")

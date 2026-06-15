@@ -22,6 +22,7 @@ import logging
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Final
 
@@ -128,6 +129,56 @@ def resolve_session(
 
 
 # ---------------------------------------------------------------------------
+# Driver identity (names / teams)
+# ---------------------------------------------------------------------------
+
+def fetch_driver_map(
+    session_key: str | int = "latest",
+    use_cache: bool = True,
+) -> dict[int, dict]:
+    """Build a ``driver_number -> {name_acronym, full_name, team_name}`` map.
+
+    Thin wrapper over GET /drivers.  Always returns a dict (empty on failure);
+    never raises.  Later records for the same driver_number win (the API may
+    emit one row per session lap-source).
+    """
+    rows = _fetch("drivers", {"session_key": session_key}, use_cache=use_cache)
+    out: dict[int, dict] = {}
+    for row in rows:
+        dn = row.get("driver_number")
+        if dn is None:
+            continue
+        try:
+            dn_int = int(dn)
+        except (TypeError, ValueError):
+            continue
+        out[dn_int] = {
+            "name_acronym": row.get("name_acronym"),
+            "full_name": row.get("full_name"),
+            "team_name": row.get("team_name"),
+        }
+    return out
+
+
+def _driver_identity(dn: int, driver_map: dict[int, dict]) -> dict:
+    """Resolve display name / full name / team for a driver number.
+
+    name preference: name_acronym -> full_name -> "#<driver_number>".
+    """
+    info = driver_map.get(dn) or {}
+    acronym = (info.get("name_acronym") or "").strip()
+    full_name = (info.get("full_name") or "").strip()
+    team = (info.get("team_name") or "").strip()
+    if acronym:
+        name = acronym
+    elif full_name:
+        name = full_name
+    else:
+        name = f"#{dn}"
+    return {"name": name, "full_name": full_name or name, "team": team}
+
+
+# ---------------------------------------------------------------------------
 # Caution parser (race-control replay)
 # ---------------------------------------------------------------------------
 
@@ -230,11 +281,14 @@ def _build_drivers(
     stints: list[dict],
     positions: list[dict],
     current_lap: int,
+    driver_map: dict[int, dict] | None = None,
 ) -> list[dict]:
     """Combine per-endpoint lists into a per-driver snapshot list.
 
     Returns drivers sorted by position (None-position drivers go last).
+    *driver_map* (driver_number -> identity) adds readable name/team fields.
     """
+    driver_map = driver_map or {}
     # ---- latest position per driver ----------------------------------------
     pos_map: dict[int, int | None] = {}
     for row in sorted(positions, key=lambda r: r.get("date", "")):
@@ -316,8 +370,12 @@ def _build_drivers(
             lap_start = int(stint.get("lap_start") or 0)
             start_age = max(1, tyre_age_at_start + (d_lap - lap_start))
 
+        identity = _driver_identity(dn, driver_map)
         results.append({
             "driver_number": dn,
+            "name": identity["name"],
+            "full_name": identity["full_name"],
+            "team": identity["team"],
             "position": pos_map.get(dn),
             "current_lap": d_lap,
             "compound": compound,
@@ -380,6 +438,7 @@ def live_snapshot(
     stints = _fetch("stints", data_params, use_cache=use_cache)
     positions = _fetch("position", data_params, use_cache=use_cache)
     race_control = _fetch("race_control", data_params, use_cache=use_cache)
+    driver_map = fetch_driver_map(sk_for_data, use_cache=use_cache)
 
     # current_lap = max lap_number across all drivers' laps
     current_lap = 0
@@ -390,7 +449,7 @@ def live_snapshot(
 
     available = bool(session_row is not None and (laps or stints or positions))
 
-    drivers = _build_drivers(laps, intervals, stints, positions, current_lap)
+    drivers = _build_drivers(laps, intervals, stints, positions, current_lap, driver_map)
     caution = _parse_caution(race_control, current_lap)
 
     return {
@@ -407,8 +466,116 @@ def live_snapshot(
     }
 
 
+# ---------------------------------------------------------------------------
+# Live-race detection
+# ---------------------------------------------------------------------------
+
+_RACE_SESSION_NAMES: Final[frozenset[str]] = frozenset({"Race", "Sprint"})
+_DEFAULT_RACE_DURATION = timedelta(hours=3)
+
+
+def _parse_iso8601(value: str | None) -> datetime | None:
+    """Parse an ISO-8601 timestamp into a tz-aware UTC datetime, or None.
+
+    OpenF1 sends offsets like ``2024-03-02T15:00:00+03:00``.  A naive timestamp
+    (no offset) is assumed to already be UTC.  Never raises.
+    """
+    if not value or not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    # Python <3.11 fromisoformat rejects a trailing "Z"; normalise it.
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _readable_session(row: dict) -> dict:
+    """A readable, possibly-partial session summary for the public contract."""
+    return {
+        "session_name": row.get("session_name", "") or "",
+        "circuit": row.get("circuit_short_name", "") or "",
+        "year": int(row.get("year", 0) or 0),
+        "date_start": row.get("date_start", "") or "",
+        "date_end": row.get("date_end", "") or "",
+    }
+
+
+def live_race_status(use_cache: bool = False) -> dict:
+    """Decide whether a real RACE/SPRINT is live right now.
+
+    Resolves the latest session and checks whether it is a Race/Sprint whose
+    [date_start, date_end] window contains the current UTC time (date_end is
+    assumed to be date_start + 3h when missing).
+
+    Returns::
+
+        {"state": "live" | "no_live",
+         "session": {session_name, circuit, year, date_start, date_end},
+         "session_key": int,
+         "message": str}
+
+    Never raises.  On any offline / parse error -> a safe ``no_live`` result
+    with an empty session and session_key 0.
+    """
+    try:
+        row = resolve_session("latest", use_cache=use_cache)
+    except Exception as exc:  # defensive: resolve_session shouldn't raise
+        logger.warning("live_race_status: resolve failed: %s", exc)
+        row = None
+
+    if not row:
+        return {
+            "state": "no_live",
+            "session": {},
+            "session_key": 0,
+            "message": "No live race right now. Live timing is unavailable.",
+        }
+
+    session = _readable_session(row)
+    session_key = int(row.get("session_key", 0) or 0)
+    session_name = session["session_name"]
+
+    start = _parse_iso8601(row.get("date_start"))
+    end = _parse_iso8601(row.get("date_end"))
+    if start is not None and end is None:
+        end = start + _DEFAULT_RACE_DURATION
+
+    now = datetime.now(timezone.utc)
+    is_race = session_name in _RACE_SESSION_NAMES
+    in_window = (
+        start is not None and end is not None and start <= now <= end
+    )
+
+    label = f"{session.get('circuit') or 'Unknown'} {session.get('year') or ''}".strip()
+
+    if is_race and in_window:
+        return {
+            "state": "live",
+            "session": session,
+            "session_key": session_key,
+            "message": f"Live now: {label} {session_name}.".replace("  ", " "),
+        }
+
+    return {
+        "state": "no_live",
+        "session": session,
+        "session_key": session_key,
+        "message": f"No live race right now. Most recent: {label} (finished).",
+    }
+
+
 __all__ = [
     "list_sessions",
     "resolve_session",
+    "fetch_driver_map",
     "live_snapshot",
+    "live_race_status",
 ]

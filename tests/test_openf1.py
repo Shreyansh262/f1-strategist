@@ -7,6 +7,8 @@ Run: pytest tests/test_openf1.py -v
 """
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 import pytest
 
 import src.pipeline.openf1 as OF
@@ -53,6 +55,12 @@ POSITIONS = [
     {"driver_number": 44, "position": 2, "date": "2024-03-02T15:05:00"},
 ]
 
+# /drivers identity records
+DRIVERS = [
+    {"driver_number": 1, "name_acronym": "VER", "full_name": "Max Verstappen", "team_name": "Red Bull Racing"},
+    {"driver_number": 44, "name_acronym": "HAM", "full_name": "Lewis Hamilton", "team_name": "Mercedes"},
+]
+
 # Race control: SC deployed lap 5, then GREEN on lap 8 -> caution should clear
 RACE_CONTROL_SC_CLEARED = [
     {"category": "SafetyCar", "flag": None, "message": "SAFETY CAR DEPLOYED", "lap_number": 5, "date": "2024-03-02T15:10:00", "scope": "Track"},
@@ -83,6 +91,7 @@ def _make_get_json(
     stints=None,
     position=None,
     race_control=None,
+    drivers=None,
 ):
     """Return a fake _get_json that dispatches by URL suffix."""
     _map = {
@@ -92,6 +101,7 @@ def _make_get_json(
         "stints": stints if stints is not None else STINTS,
         "position": position if position is not None else POSITIONS,
         "race_control": race_control if race_control is not None else [],
+        "drivers": drivers if drivers is not None else DRIVERS,
     }
 
     def fake(url: str, params: dict, use_cache: bool = True) -> list:
@@ -398,3 +408,141 @@ class TestSessionAvailable:
         monkeypatch.setattr(OF, "_get_json", fake)
         snap = OF.live_snapshot(session_key=9999, use_cache=False)
         assert snap["session"]["available"] is False
+
+
+# ---------------------------------------------------------------------------
+# Driver names / teams (/drivers wiring)
+# ---------------------------------------------------------------------------
+
+class TestDriverNames:
+    EXPECTED_KEYS = {
+        "driver_number", "name", "full_name", "team", "position",
+        "current_lap", "compound", "start_age", "gap_to_leader_s", "last_lap_s",
+    }
+
+    def test_name_acronym_used(self, monkeypatch):
+        monkeypatch.setattr(OF, "_get_json", _make_get_json())
+        snap = OF.live_snapshot(session_key=9158, use_cache=False)
+        d1 = next(d for d in snap["drivers"] if d["driver_number"] == 1)
+        assert d1["name"] == "VER"
+        assert d1["full_name"] == "Max Verstappen"
+        assert d1["team"] == "Red Bull Racing"
+
+    def test_driver_dict_keys_stable(self, monkeypatch):
+        """Back-compat: all original keys plus the new name/team keys present."""
+        monkeypatch.setattr(OF, "_get_json", _make_get_json())
+        snap = OF.live_snapshot(session_key=9158, use_cache=False)
+        for d in snap["drivers"]:
+            assert set(d) == self.EXPECTED_KEYS
+
+    def test_name_falls_back_to_full_name(self, monkeypatch):
+        drivers_no_acro = [
+            {"driver_number": 1, "name_acronym": None, "full_name": "Max Verstappen", "team_name": "Red Bull Racing"},
+        ]
+        monkeypatch.setattr(OF, "_get_json", _make_get_json(drivers=drivers_no_acro))
+        snap = OF.live_snapshot(session_key=9158, use_cache=False)
+        d1 = next(d for d in snap["drivers"] if d["driver_number"] == 1)
+        assert d1["name"] == "Max Verstappen"
+
+    def test_name_falls_back_to_number(self, monkeypatch):
+        """No /drivers record at all -> name is '#<num>'."""
+        monkeypatch.setattr(OF, "_get_json", _make_get_json(drivers=[]))
+        snap = OF.live_snapshot(session_key=9158, use_cache=False)
+        d1 = next(d for d in snap["drivers"] if d["driver_number"] == 1)
+        assert d1["name"] == "#1"
+        assert d1["team"] == ""
+
+    def test_fetch_driver_map(self, monkeypatch):
+        monkeypatch.setattr(OF, "_get_json", _make_get_json())
+        dmap = OF.fetch_driver_map(session_key=9158, use_cache=False)
+        assert dmap[1]["name_acronym"] == "VER"
+        assert dmap[44]["team_name"] == "Mercedes"
+
+    def test_fetch_driver_map_empty_on_failure(self, monkeypatch):
+        monkeypatch.setattr(OF, "_get_json", lambda url, params, use_cache=True: [])
+        assert OF.fetch_driver_map(session_key=9158, use_cache=False) == {}
+
+
+# ---------------------------------------------------------------------------
+# live_race_status
+# ---------------------------------------------------------------------------
+
+def _iso(dt: datetime) -> str:
+    return dt.astimezone(timezone.utc).isoformat()
+
+
+class TestLiveRaceStatus:
+    def test_live_race_detected(self, monkeypatch):
+        """A Race whose [start, end] window contains now -> state='live'."""
+        now = datetime.now(timezone.utc)
+        row = dict(SESSION_ROW)
+        row["session_name"] = "Race"
+        row["date_start"] = _iso(now - timedelta(minutes=30))
+        row["date_end"] = _iso(now + timedelta(minutes=90))
+        monkeypatch.setattr(OF, "_get_json", lambda url, params, use_cache=True: [row])
+        status = OF.live_race_status(use_cache=False)
+        assert status["state"] == "live"
+        assert status["session"]["session_name"] == "Race"
+        assert status["session_key"] == row["session_key"]
+        assert "Live" in status["message"]
+
+    def test_sprint_live_detected(self, monkeypatch):
+        now = datetime.now(timezone.utc)
+        row = dict(SESSION_ROW)
+        row["session_name"] = "Sprint"
+        row["date_start"] = _iso(now - timedelta(minutes=10))
+        row["date_end"] = _iso(now + timedelta(minutes=20))
+        monkeypatch.setattr(OF, "_get_json", lambda url, params, use_cache=True: [row])
+        assert OF.live_race_status(use_cache=False)["state"] == "live"
+
+    def test_missing_date_end_assumes_3h(self, monkeypatch):
+        """No date_end but now is within start + 3h -> live."""
+        now = datetime.now(timezone.utc)
+        row = dict(SESSION_ROW)
+        row["session_name"] = "Race"
+        row["date_start"] = _iso(now - timedelta(hours=1))
+        row.pop("date_end", None)
+        monkeypatch.setattr(OF, "_get_json", lambda url, params, use_cache=True: [row])
+        assert OF.live_race_status(use_cache=False)["state"] == "live"
+
+    def test_finished_race_not_live(self, monkeypatch):
+        """A Race that ended in the past -> no_live with 'finished' message."""
+        now = datetime.now(timezone.utc)
+        row = dict(SESSION_ROW)
+        row["session_name"] = "Race"
+        row["date_start"] = _iso(now - timedelta(days=2))
+        row["date_end"] = _iso(now - timedelta(days=2) + timedelta(hours=2))
+        monkeypatch.setattr(OF, "_get_json", lambda url, params, use_cache=True: [row])
+        status = OF.live_race_status(use_cache=False)
+        assert status["state"] == "no_live"
+        assert "finished" in status["message"].lower()
+        assert status["session"]["session_name"] == "Race"
+        assert status["session_key"] == row["session_key"]
+
+    def test_qualifying_in_window_not_live(self, monkeypatch):
+        """A Qualifying session in its window is NOT a live race."""
+        now = datetime.now(timezone.utc)
+        row = dict(SESSION_ROW)
+        row["session_name"] = "Qualifying"
+        row["date_start"] = _iso(now - timedelta(minutes=10))
+        row["date_end"] = _iso(now + timedelta(minutes=20))
+        monkeypatch.setattr(OF, "_get_json", lambda url, params, use_cache=True: [row])
+        assert OF.live_race_status(use_cache=False)["state"] == "no_live"
+
+    def test_offline_returns_safe_no_live(self, monkeypatch):
+        """No session resolved (offline) -> no_live, empty session, key 0."""
+        monkeypatch.setattr(OF, "_get_json", lambda url, params, use_cache=True: [])
+        status = OF.live_race_status(use_cache=False)
+        assert status["state"] == "no_live"
+        assert status["session"] == {}
+        assert status["session_key"] == 0
+
+    def test_never_raises(self, monkeypatch):
+        def boom(url, params, use_cache=True):
+            raise RuntimeError("network down")
+        monkeypatch.setattr(OF, "_get_json", boom)
+        try:
+            status = OF.live_race_status(use_cache=False)
+        except Exception as exc:
+            pytest.fail(f"live_race_status raised unexpectedly: {exc}")
+        assert status["state"] == "no_live"

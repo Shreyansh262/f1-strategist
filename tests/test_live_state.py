@@ -41,11 +41,14 @@ def _snapshot(caution=None, current_lap=20):
         "session": {"session_key": 1, "circuit": "Sakhir", "year": 2024,
                     "session_name": "Race", "current_lap": current_lap, "available": True},
         "drivers": [
-            {"driver_number": 1, "position": 1, "current_lap": current_lap,
+            {"driver_number": 1, "name": "VER", "full_name": "Max Verstappen",
+             "team": "Red Bull Racing", "position": 1, "current_lap": current_lap,
              "compound": "HARD", "start_age": 15, "gap_to_leader_s": 0.0, "last_lap_s": 95.0},
-            {"driver_number": 44, "position": 2, "current_lap": current_lap,
+            {"driver_number": 44, "name": "HAM", "full_name": "Lewis Hamilton",
+             "team": "Mercedes", "position": 2, "current_lap": current_lap,
              "compound": "MEDIUM", "start_age": 8, "gap_to_leader_s": 4.2, "last_lap_s": 95.3},
-            {"driver_number": 16, "position": 3, "current_lap": current_lap,
+            {"driver_number": 16, "name": "LEC", "full_name": "Charles Leclerc",
+             "team": "Ferrari", "position": 3, "current_lap": current_lap,
              "compound": "SOFT", "start_age": 3, "gap_to_leader_s": 9.9, "last_lap_s": 95.6},
         ],
         "caution": caution,
@@ -60,9 +63,20 @@ class TestFromSnapshot:
         assert spec.n_laps == 57 - 20              # remaining laps
         assert len(spec.drivers) == 3
         lead = spec.drivers[0]
-        assert lead.driver == "1" and lead.start_compound == "HARD"
+        assert lead.driver == "VER" and lead.start_compound == "HARD"
         assert lead.start_age == 15 and lead.grid_gap_s == 0.0
         assert spec.drivers[1].grid_gap_s == 4.2
+
+    def test_driver_named_by_acronym(self):
+        spec = LS.from_snapshot(_snapshot())
+        assert [d.driver for d in spec.drivers] == ["VER", "HAM", "LEC"]
+
+    def test_driver_name_falls_back_to_number(self):
+        snap = _snapshot()
+        for d in snap["drivers"]:
+            d.pop("name", None)
+        spec = LS.from_snapshot(snap)
+        assert spec.drivers[0].driver == "#1"
 
     def test_caution_threaded(self):
         spec = LS.from_snapshot(_snapshot(caution={"cause": "SC", "elapsed_laps": 2}))
@@ -75,9 +89,17 @@ class TestFromSnapshot:
     def test_empty_drivers_returns_none(self):
         assert LS.from_snapshot({"session": {}, "drivers": []}) is None
 
-    def test_non_slick_compound_safe(self):
+    def test_wet_compound_preserved(self):
+        # INTERMEDIATE/WET are now first-class (own degradation curves), so a
+        # live wet feed keeps its compound instead of being coerced to MEDIUM.
         snap = _snapshot()
         snap["drivers"][0]["compound"] = "INTERMEDIATE"
+        spec = LS.from_snapshot(snap)
+        assert spec.drivers[0].start_compound == "INTERMEDIATE"
+
+    def test_unknown_compound_safe(self):
+        snap = _snapshot()
+        snap["drivers"][0]["compound"] = "ULTRASOFT"
         spec = LS.from_snapshot(snap)
         assert spec.drivers[0].start_compound == "MEDIUM"
 

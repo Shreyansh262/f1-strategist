@@ -264,55 +264,53 @@ venv\Scripts\python.exe -m streamlit run dashboard/app.py
 ```
 Your browser opens automatically. All the screens are listed in the left sidebar.
 
-**The 4 screens:**
+**A note on the tables (read this once):** every results table speaks plain English now — **Win chance** (how often a driver finished 1st across all the simulated races), **Podium chance** (top 3), **Avg finish** (their average finishing position, 1 = win), and **Best case / Worst case** (a realistic good and bad day — where they ended up in 95% of the sims). No cryptic codes like "p95". The model names are hidden too — you'll see "lap-time prediction" or "race simulator", not "LightGBM"/"TFT".
 
-**1. Overview — your 30-second pitch**
+**The 5 screens:**
 
-This is the front door. You see four big numbers at the top:
-- How accurate the lap-time model is (green flag) and how much worse on a regulation change (2025 vs 2026).
-- How many races of real data went into training.
-- How many simulations validate the model when you replay past races (81% of drivers' actual finishes fell where the model predicted).
+**1. Dashboard — your 30-second pitch**
 
-Use this page when you want to show someone the project for the first time. It answers "does this actually work?" in one screen.
+The front door. Four big numbers at the top (lap-time accuracy on green-flag laps, how much harder the 2026 rule change is, how many races of real data went in, and how reliable the simulator is when you replay past races). Below that, four plain cards explaining the four things the project does (predict lap time, model tyre wear, find the best pit lap, simulate the whole race), and four cards linking to the screens below. Use this to show someone the project cold — it answers "does this actually work?" in one screen.
 
-**2. Pre-Race — play strategist before the flag drops**
+**2. Pre-Race — predict a race that hasn't happened yet**
 
-Pick a track from the dropdown, pick which drivers are on the grid, then hit the button to load the sim.
+This is a *real* prediction tool, not a re-run of an old race. You:
+- Pick a track and (optionally) a date.
+- **Set the starting grid.** Since we don't predict qualifying, you do it: the grid is pre-filled from *last year's* result at that track, with any new/replaced drivers dropped to the back, and you drag the numbers to reorder it however you like.
+- **Set the conditions** — fetch a weather forecast for your date, slide the track temperature up or down (hotter track = tyres wear faster = more stops), and flip a "wet race" switch if needed.
+- Hit predict, and the simulator runs the race thousands of times.
 
-You see two things:
-- A graph for each tyre type (soft/medium/hard) showing how lap-time changes as the tyre ages. The curves have shaded bands — that's the model's uncertainty. Real data from 100+ stints teaches the shape.
-- Below that, a section to input strategy ideas: "stop once on lap 28" or "stop twice (lap 15 and 35)" etc. For each plan you enter, the app runs 1000+ simulated races in the background and shows you which plan wins most often as a percentage bar.
-- A colored grid underneath: one row per lap, one column per tyre age. Green means "stay out", red means "pit now" according to the exact optimizer. Hover to see the math.
+You get the **predicted finishing order** with each driver's win/podium chance, plus a **"Places gained"** column showing who's expected to climb or fall from where they start. Each driver's pit plan is shown too. Crucially, every driver's base pace comes from their *recent form* — never from the race you're predicting — so it's an honest forecast.
 
-This is the page for "what if?" questions. It's how you'd brief a driver before a weekend.
+**3. Race Replay — rewatch a past race, then change history**
 
-**3. Live Replay — rewatch a real race with the model's brain on screen**
+Pick a season and race, drag the lap slider to step through it. For each lap you see who's leading and by how much, what tyre everyone's on and how old it is, the actual-vs-predicted lap time for a chosen driver, and "danger zone" warnings for tyres about to fall off a cliff.
 
-Pick a season and a race from the dropdowns. Drag the lap slider to step through the race lap by lap.
+Then two "what if" tools at any lap:
+- **Project the finish from here** — from the lap you're on, simulate the rest of the race (it respects a safety car if one is out) and see the predicted finishing order.
+- **Strategy what-if** — pick a car, give it a *different* pit plan from this lap on, and the app re-runs the rest of the race with the *exact same luck* (same random seed) so the only thing that changed is the strategy. It tells you whether that car would have gained or lost places. This is the "should they have boxed earlier?" tool.
 
-For each lap you see:
-- Who's leading and by how much (the grid updates as overtakes happen).
-- What tyre each driver is on and how old it is.
-- A dotted line showing what the model *predicted* the leader would do that lap, vs what he actually did (the solid line). When these disagree by a lot, you see a tooltip explaining why (traffic, an aggressive management choice, a safety car).
-- Red boxes around drivers whose tyres are entering the "danger zone" — the model knows they're about to fall off a cliff.
-
-This page answers: "how close were the predictions that day?" and "did the model catch the right moments when the race changed?"
-
-**4. Post-Race — the report card**
+**4. Post-Race — the report card and the second-guessing**
 
 Pick a finished race and see:
-- A table showing how far off the prediction was for each driver across the whole race (actual gap vs predicted gap).
-- A comparison: "if the winner had used a different pit strategy, would they still have won?" (what the model recommends vs what actually happened).
-- How well the tyre degradation model nailed the shape of the race (did tyres wear like we expected?).
-- Which individual laps had big errors — almost always the safety-car laps, because you can't predict a crash.
+- **Was the winner's strategy the best one?** — the simulator ranks their real pit plan against alternatives.
+- **The "when to pit" map** — a coloured grid (one row per lap, one column per tyre age) showing the optimiser's best call at every moment; there's a plain-English "how to read this" note under it.
+- **How could teams have done better?** — for the top finishers, a table of their actual finish vs where a smarter strategy would have put them, and how many places that's worth.
+- **Tyre check** — did the tyres actually wear the way our model expected?
 
-This page is for learning: when did the model miss and why? It builds confidence in what you *should* trust it on.
+(The old confusing model-error graphs were removed — this page is now about strategy and second-guessing, which is what makes it different from Race Replay.)
+
+**5. Live — follow a race that's happening right now**
+
+One button: **Fetch live race**. If a Grand Prix (or sprint) is actually running, you get the live order *by driver name and team* (not numbers), the current flag (green/yellow/safety car/red), and a flag-aware projection of how it finishes. If nothing is live, it simply tells you so and shows the most recent race's final result — it will **not** pretend a finished race is live or show a fake "100% win". (Live timing comes from the free public OpenF1 feed.)
+
+**A word on wet tyres:** intermediate and wet running is now included, but there's very little wet data in the sport's public records, so treat any wet prediction as a rough indication, not gospel — the app says so on screen.
 
 **What to do with it (checklist):**
 
-1. **Run it and explore.** Click through all 4 pages once so it feels familiar.
-2. **Build a demo story.** A good interview pitch is: Overview (30 sec) → Pre-Race on Bahrain (1 min, enter a couple of strategy ideas) → Replay a 2025 race (1 min, drag the slider) → Post-Race (30 sec, look at where the model was right and wrong). That's your 3–4 minute proof.
-3. **Take screenshots** of each page. Phase 7 needs them for the README.
-4. **Watch for red warning panels.** If a page shows red text, it means a model file or data file is missing — the page tells you which. Nothing is "broken"; the warning just identifies what you need to download. (See the README for artifact links.)
+1. **Run it and explore.** Click through all 5 screens once so it feels familiar.
+2. **Build a demo story.** A good interview pitch: Dashboard (30 sec) → Pre-Race predict an upcoming race with your own grid (1 min) → Race Replay a 2025 race and try a different strategy (1 min) → Post-Race "how could they have done better?" (30 sec). That's your 3–4 minute proof.
+3. **Take screenshots** of each page for the README.
+4. **Watch for red warning panels.** Red text means a model or data file is missing — the page tells you which. Nothing is "broken"; it just identifies what to download. (See the README for artifact links.)
 
 The dashboard is read-only — it can't change any real data. It's your own personal race engineer, always available to ask "what if?"

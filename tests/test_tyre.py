@@ -73,9 +73,20 @@ class TestPrepare:
         )
         assert prepare_stint_laps(df).empty
 
-    def test_wet_compounds_excluded(self):
+    def test_wet_compounds_now_included(self):
+        # Wet support (Phase 11): INTERMEDIATE/WET are kept and modelled with
+        # their own curves, no longer silently dropped.
         df = pd.DataFrame(
             _stint_rows(2023, 1, "VER", 1, "X Grand Prix", "INTERMEDIATE", 0)
+        )
+        out = prepare_stint_laps(df)
+        assert not out.empty
+        assert (out["Compound"] == "INTERMEDIATE").all()
+
+    def test_unknown_compound_still_excluded(self):
+        # A genuinely unrecognised compound string is still dropped.
+        df = pd.DataFrame(
+            _stint_rows(2023, 1, "VER", 1, "X Grand Prix", "ULTRASOFT", 0)
         )
         assert prepare_stint_laps(df).empty
 

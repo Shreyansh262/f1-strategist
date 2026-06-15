@@ -16,6 +16,25 @@
 ### v3.5 (2026-06-12): Phase 5 RL TRAINED + EVALUATED — PPO (3 seeds × 3M, Kaggle T4) matched,
 ###   did NOT beat the MDP (+1.2s race time / −0.08 finish pos, paired 500-ep eval); 100% legal
 ###   both; documented per 10.5. Model card rl_pit_agent.md written; binaries gitignored, CSVs committed.
+### v3.8 (2026-06-15): UX overhaul + wet tyres + true pre-race + live fix — DELIVERED, LOCAL, no Kaggle.
+###   Built across 7 subagents (2 backend waves + 5 page rewrites), all AppTest-clean, 177 tests green (+18).
+###   BACKEND: (1) tyre fit.py + engine.py now first-class INTERMEDIATE/WET (engine COMPOUNDS appended so dry
+###   sims are byte-identical same-seed; predict_degradation never raises for wet; wet pooled to a global curve,
+###   data-sparse → "indicative only"; wet mid is negative = drying-track confound, honest wide bands). Re-fit is
+###   local CPU: `MLFLOW_ALLOW_FILE_STORE=true venv/Scripts/python.exe -m src.models.tyre.fit`. NO GPU/Kaggle —
+###   TFT already trained on wet laps. (2) openf1.py adds /drivers map (driver_number→name_acronym/full_name/team)
+###   so live shows NAMES not numbers + live_race_status() (is a Race/Sprint live NOW via date_start/end) so a
+###   finished race is never shown as a bogus 100%-win projection; live_state.from_openf1 names drivers by acronym.
+###   FRONTEND (theme.friendly_finish_table shared contract — every sim table reads Win chance/Podium chance/Avg
+###   finish/Best case/Worst case, never p5/p95/win_prob): Dashboard cards now equal-height (full flex chain + min-height
+###   fallback) + de-jargoned copy/KPIs (4 plain "what we built" + 4 nav cards); Pre-Race REBUILT as true upcoming-
+###   race prediction (pick circuit+date, grid seeded from last year's running + editable st.data_editor, new seats to
+###   back, fetch/estimate weather, wet toggle, simulate → finishing order + "Places gained" vs grid + per-driver
+###   plan; candidate-ranking + MDP map REMOVED → moved to Post-Race); Race Replay ABSORBED the Live replay-projection
+###   tab + added "project finish from here" and a same-seed strategy WHAT-IF; Post-Race DROPPED the two LightGBM
+###   graphs (MAE-per-driver + error-spikes), GAINED the strategy lab + MDP "when to pit" map + a "how could teams
+###   have done better?" standings-delta table; Live page is now ONE button ("Fetch live race") — no session-key,
+###   names+teams, no projection when no race is live. ERS/battery still parked (telemetry). User commits.
 ### v3.7 (2026-06-14): Phase 10 (live race + flag-following) DELIVERED — 10.1–10.5 all done, LOCAL,
 ###   no Kaggle. New: src/pipeline/openf1.py (OpenF1 REST client, urllib-only, no key, on-disk cache —
 ###   list_sessions/resolve_session/live_snapshot(session_key)→{session,drivers,caution}; caution precedence
@@ -802,7 +821,9 @@ training steps are flagged — user runs them and returns artifacts.
            streamlit==1.55.0 (st.navigation ✓) + copytree bundles dashboard/ wholesale, so no export change needed.
            Verified: AppTest of app.py (home) + all 3 pages standalone = 0 exceptions.
 - [x] 8.2  Per-circuit official race-lap table in Pre-Race; auto-fill n_laps, show slider only for unknown circuits.  DONE 2026-06-14.
-- [x] 8.3  Plain-language "how to read this map" caption on the MDP pit-map heatmap.  DONE 2026-06-14. (Broader chart-clarity pass still open.)
+- [x] 8.3  Plain-language "how to read" captions on charts. MDP pit-map heatmap DONE 2026-06-14; broader pass
+           DONE 2026-06-15 — added how-to-read captions to Pre-Race tyre-degradation chart + win/podium bars and
+           the Race-Replay gap-to-leader chart (the graphs the user flagged as confusing). Additive st.caption only.
 - [x] 8.4  Relabelled Live page "Race replay" (honest, historical; notes true-live is a separate upcoming mode).  DONE 2026-06-14.
            (Note: the what-if/strategy audit already lives in Post-Race; no move needed.)
 - [x] 8.5  Pre-Race base pace from recent form, NOT the race's own laps.  DONE 2026-06-14. New theme.form_base_pace():

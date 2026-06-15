@@ -45,8 +45,17 @@ class TestStartAge:
         assert list(age) == [18, 19, 2, 3]       # fresh tyre after the stop
         assert list(stint) == [0, 0, 1, 1]
 
-    def test_unknown_compound_falls_back_not_crash(self):
+    def test_wet_compound_maps_to_own_index(self):
+        # Phase 11: INTERMEDIATE/WET are first-class and use their own curve,
+        # no longer coerced to MEDIUM.
         d = DriverSpec("X", 90.0, "INTERMEDIATE", [], 1, 0.0)
+        spec = RaceSpec("Bahrain Grand Prix", 0, 3, [d])
+        comp, _, _ = _stint_schedule(spec, d)
+        assert comp[0] == E.COMPOUNDS.index("INTERMEDIATE")
+
+    def test_unknown_compound_falls_back_not_crash(self):
+        # A truly unrecognised compound string still falls back to MEDIUM.
+        d = DriverSpec("X", 90.0, "ULTRASOFT", [], 1, 0.0)
         spec = RaceSpec("Bahrain Grand Prix", 0, 3, [d])
         comp, _, _ = _stint_schedule(spec, d)
         assert comp[0] == E.COMPOUNDS.index("MEDIUM")

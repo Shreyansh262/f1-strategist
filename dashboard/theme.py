@@ -141,13 +141,53 @@ div[data-testid="stMetricValue"] {{
 }}
 div[data-testid="stMetricDelta"] {{ font-size: 0.8rem; }}
 
-/* equal-height card rows: make each column a flex item that stretches,
-   so f1-card height:100% fills the tallest card in the row */
+/* ------------------------------------------------------------------ *
+ * EQUAL-HEIGHT CARD ROWS
+ *
+ * Streamlit renders a column row as a deeply nested wrapper chain:
+ *   stHorizontalBlock
+ *     > stColumn
+ *         > [stVerticalBlockBorderWrapper]   (only when border=True)
+ *             > div
+ *                 > stVerticalBlock
+ *                     > stElementContainer        (one per element)
+ *                         > stMarkdown
+ *                             > div               (markdown body)
+ *                                 > .f1-card
+ * A plain `height:100%` on .f1-card only works if EVERY ancestor in that
+ * chain is also a full-height flex container — otherwise the percentage has
+ * no resolved parent height to inherit and the card collapses to content.
+ * The previous fix only stretched the top two wrappers, so cards still grew
+ * with their text. Here we make the whole chain a vertical flexbox and let
+ * the markdown container that actually holds .f1-card grow to fill (flex:1).
+ * A min-height fallback guarantees a short card still lines up if any future
+ * Streamlit DOM change breaks an intermediate flex link.
+ * ------------------------------------------------------------------ */
 div[data-testid="stHorizontalBlock"] {{ align-items: stretch; }}
-div[data-testid="stColumn"] {{ display: flex; }}
+div[data-testid="stColumn"] {{ display: flex; flex-direction: column; }}
+/* stretch every wrapper between the column and the card to 100% height,
+   each itself a column flexbox so the next level can also stretch */
 div[data-testid="stColumn"] > div,
 div[data-testid="stColumn"] [data-testid="stVerticalBlockBorderWrapper"],
-div[data-testid="stColumn"] [data-testid="stVerticalBlock"] {{ width: 100%; height: 100%; }}
+div[data-testid="stColumn"] [data-testid="stVerticalBlockBorderWrapper"] > div,
+div[data-testid="stColumn"] [data-testid="stVerticalBlock"] {{
+    width: 100%;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+}}
+/* the element + markdown wrappers that directly hold .f1-card must grow to
+   fill the leftover column height so the card inside can be height:100% */
+div[data-testid="stColumn"] [data-testid="stVerticalBlock"]
+    > div:has(.f1-card),
+div[data-testid="stColumn"] [data-testid="stElementContainer"]:has(.f1-card),
+div[data-testid="stColumn"] [data-testid="stMarkdown"]:has(.f1-card),
+div[data-testid="stColumn"] [data-testid="stMarkdown"]:has(.f1-card) > div {{
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    height: 100%;
+}}
 
 /* info / panel card */
 .f1-card {{
@@ -156,6 +196,10 @@ div[data-testid="stColumn"] [data-testid="stVerticalBlock"] {{ width: 100%; heig
     border-radius: 6px;
     padding: 18px 20px;
     height: 100%;
+    /* flex item so it fills the stretched wrapper chain above; the
+       min-height fallback equalises short cards even if a flex link breaks */
+    flex: 1 1 auto;
+    min-height: 190px;
 }}
 .f1-card h4 {{ margin-top: 0; color: {WHITE}; }}
 .f1-card p {{ color: {GREY}; font-size: 0.92rem; line-height: 1.5; }}
@@ -233,6 +277,61 @@ def compound_chip(compound: str) -> str:
     c = COMPOUND_COLORS.get(compound, GREY)
     fg = "#0E0E10" if compound in ("MEDIUM", "HARD") else "#fff"
     return f'<span class="chip" style="background:{c};color:{fg}">{compound}</span>'
+
+
+# ---------------------------------------------------------------------------
+# Fan-friendly tables — plain labels for simulation finishing-order output.
+# SHARED CONTRACT: every page renders sim/recommend tables through
+# friendly_finish_table() so a casual fan never sees raw column names like
+# "p95_finish". Do not remove or rename these without updating all pages.
+# ---------------------------------------------------------------------------
+
+FRIENDLY_FINISH_LABELS = {
+    "driver": "Driver",
+    "strategy": "Strategy",
+    "start": "Start tyre",
+    "win_prob": "Win chance",
+    "podium_prob": "Podium chance",
+    "mean_finish": "Avg finish",
+    "p5_finish": "Best case",
+    "p95_finish": "Worst case",
+    "p50_time_s": "Median race time (s)",
+    "base_pace_s": "Base pace (s/lap)",
+    "grid_pos": "Grid",
+}
+
+# Tooltip text for the less-obvious columns (use with st.dataframe column_config
+# or a small caption beneath the table).
+FRIENDLY_FINISH_HELP = {
+    "Win chance": "How often this driver finished 1st across all simulated races.",
+    "Podium chance": "How often this driver finished in the top 3.",
+    "Avg finish": "Average finishing position across simulated races (1 = win).",
+    "Best case": "A realistic good day — they finished at least this high in 95% of sims.",
+    "Worst case": "A realistic bad day — they finished no worse than this in 95% of sims.",
+}
+
+
+def friendly_finish_table(df: pd.DataFrame,
+                          pct_cols: tuple[str, ...] = ("win_prob", "podium_prob")) -> pd.DataFrame:
+    """Return a copy of a sim/recommend table with fan-friendly columns.
+
+    - probability columns -> "63.0%" strings
+    - average finish rounded to 2dp; best/worst-case positions to whole numbers
+    - columns renamed via FRIENDLY_FINISH_LABELS (unknown columns left untouched)
+    """
+    out = df.copy()
+    for c in pct_cols:
+        if c in out.columns:
+            out[c] = (out[c].astype(float) * 100).round(1).astype(str) + "%"
+    if "mean_finish" in out.columns:
+        out["mean_finish"] = out["mean_finish"].astype(float).round(2)
+    for c in ("p5_finish", "p95_finish"):
+        if c in out.columns:
+            out[c] = out[c].astype(float).round(0).astype(int)
+    if "p50_time_s" in out.columns:
+        out["p50_time_s"] = out["p50_time_s"].astype(float).round(1)
+    rename = {k: v for k, v in FRIENDLY_FINISH_LABELS.items() if k in out.columns}
+    return out.rename(columns=rename)
 
 
 # ---------------------------------------------------------------------------

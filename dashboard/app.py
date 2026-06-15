@@ -89,11 +89,10 @@ def home() -> None:
           <h1 style="font-size:3.0rem;margin:2px 0 0 0;line-height:1.05;">
             F1 AI RACE STRATEGIST</h1>
           <p style="color:{T.GREY};font-size:1.1rem;max-width:780px;margin-top:10px;">
-            Lap-time prediction across regulation eras with a Temporal Fusion
-            Transformer, physics-informed tyre-degradation curves, and an MDP pit
-            policy — all fed <em>with their uncertainties</em> into a Monte-Carlo
-            race engine that returns pit strategy as <strong style="color:{T.WHITE}">
-            win-probability distributions</strong>, not point estimates.
+            We predict how fast every car laps, how its tyres wear, and the best
+            laps to pit — then run the whole race thousands of times to turn all
+            of that into <strong style="color:{T.WHITE}">win and podium chances</strong>,
+            not a single guess.
           </p>
         </div>
         <hr style="border:none;border-top:1px solid {T.BORDER};margin:18px 0 26px 0;">
@@ -106,39 +105,46 @@ def home() -> None:
     c1, c2, c3, c4 = st.columns(4)
     with c1:
         val = f"{k['green_mae_test']:.2f}s" if k["green_mae_test"] else "—"
-        st.metric("TFT green MAE · 2026 test", val,
-                  help="Mean absolute lap-time error on green-flag laps, 2026 (new-regulation) test set.")
+        st.metric("Lap-time accuracy · 2026 (sec error)", val,
+                  help="On average, our lap-time prediction is off by about this many "
+                       "seconds per lap on 2026 races (the current rules). Lower is better.")
     with c2:
         val = f"{k['green_mae_val']:.2f}s" if k["green_mae_val"] else "—"
-        st.metric("TFT green MAE · 2025 val", val)
+        st.metric("Lap-time accuracy · 2025 (sec error)", val,
+                  help="Same lap-time accuracy measured on 2025 races. Lower is better.")
     with c3:
         races = f"{k['n_races']:,}" if k["n_races"] else "—"
         laps = f"{k['n_laps']:,} laps" if k["n_laps"] else ""
-        st.metric("Races ingested · 2022–2026", races, delta=laps, delta_color="off")
+        st.metric("Races studied · 2022–2026", races, delta=laps, delta_color="off",
+                  help="Number of real Grand Prix races (and total laps) the models "
+                       "learned from, covering 2022 through 2026.")
     with c4:
         val = f"{k['sim_cov']:.0%}" if k["sim_cov"] else "—"
-        st.metric("Sim replay coverage", val,
-                  help="Share of drivers' actual finishing positions inside the simulated central-80% band (target 80%).")
+        st.metric("Simulator reliability", val,
+                  help="How often a driver's real finishing position landed inside the "
+                       "range our race simulator predicted. Closer to 80% means the "
+                       "simulator's confidence is well calibrated.")
 
     st.write("")
 
     # ---- How it works ----
-    T.section("Pipeline", "How it works")
+    T.section("What we built", "How it works")
 
     cols = st.columns(4)
     cards = [
-        ("01 · Lap time", "Temporal Fusion Transformer",
-         "A sequence model over laps-within-a-stint. Quantile outputs give calibrated "
-         "uncertainty and an explicit Era feature handles the 2022→2026 regulation shift."),
-        ("02 · Tyres", "Degradation curves",
-         "Fuel-corrected quadratic deg per compound × circuit × era from scipy curve-fit, "
-         "with analytic 95% confidence bands and hierarchical pooling for thin cells."),
-        ("03 · Pit policy", "Exact MDP",
-         "Backward induction over (lap × compound × tyre-age × two-compound-rule) gives "
-         "the optimal single-car pit policy — an interpretable heatmap, the strategy proposer."),
-        ("04 · Strategy", "Monte-Carlo engine",
-         "Composes all three models with their uncertainties over thousands of vectorised "
-         "rollouts → win / podium probability distributions. The MDP proposes, the sim disposes."),
+        ("01 · Lap time", "How fast each car laps",
+         "We predict each car's lap time — and, just as importantly, how sure we are "
+         "about it. Some cars and conditions are far more predictable than others."),
+        ("02 · Tyre wear", "How tyres slow down",
+         "Tyres lose grip as they age, and they do it differently for each tyre type "
+         "and each track. We model that wear — including wet-weather tyres (still a "
+         "rough, early estimate)."),
+        ("03 · Pit strategy", "The best lap to pit",
+         "Pitting too early or too late costs places. We work out the best lap (or laps) "
+         "for a car to come in and change tyres."),
+        ("04 · Race simulator", "Win and podium chances",
+         "We run the whole race thousands of times, mixing in all the uncertainty above, "
+         "to turn it into win and podium chances — not one single guess."),
     ]
     for col, (step, title, body) in zip(cols, cards):
         with col:
@@ -155,20 +161,22 @@ def home() -> None:
     st.write("")
 
     # ---- Page navigation cards ----
-    T.section("Explore", "Three analysis modes")
+    T.section("Explore", "Four ways to use it")
 
-    nav = st.columns(3)
+    nav = st.columns(4)
     nav_cards = [
-        ("Pre-Race", "Plan a strategy",
-         "Pick a circuit and era, build a driver lineup from recent form, inspect "
-         "tyre-degradation curves, and rank candidate pit strategies by win probability "
-         "against the field. View the MDP pit-policy heatmap."),
-        ("Race Replay", "Re-run history lap-by-lap",
-         "Step through any 2022–2026 race. Track position and gaps, per-driver tyre stints, "
-         "actual-vs-predicted lap time with the calibration ribbon, and pit-window alerts."),
-        ("Post-Race", "Audit what happened",
-         "Per-driver predicted-vs-actual MAE, 'was the actual strategy optimal?' against the "
-         "simulator, fitted-vs-actual tyre degradation, and error spikes correlated with SC/VSC."),
+        ("Pre-Race", "Predict an upcoming race",
+         "Set the grid and the weather, then simulate the finishing order before the "
+         "lights go out."),
+        ("Race Replay", "Re-run a past race",
+         "Replay any past race lap-by-lap, then try a different strategy mid-race to see "
+         "if it would have helped."),
+        ("Post-Race", "Audit a finished race",
+         "Look back at a finished race: was the strategy the best one, and how could the "
+         "teams have done better?"),
+        ("Live", "Follow a live race",
+         "Follow a race while it's actually running, with a flag-aware projection of the "
+         "finish."),
     ]
     for col, (label, title, body) in zip(nav, nav_cards):
         with col:
@@ -182,8 +190,7 @@ def home() -> None:
             )
 
     st.write("")
-    st.info("Use the sidebar to open **Pre-Race**, **Race Replay**, **Post-Race**, or **Live** "
-            "(real-time OpenF1 timing + flag-aware projection).", icon="🏁")
+    st.caption("Open any of these from the sidebar.")
 
     # sidebar footer
     with st.sidebar:

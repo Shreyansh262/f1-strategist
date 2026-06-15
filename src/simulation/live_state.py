@@ -118,8 +118,12 @@ def from_snapshot(snapshot: dict, total_laps: int | None = None) -> RaceSpec | N
         compound = d.get("compound") or "MEDIUM"
         if compound not in COMPOUNDS:
             compound = "MEDIUM"
+        # Prefer a readable name/acronym; fall back to "#<driver_number>".
+        name = (d.get("name") or "").strip()
+        if not name:
+            name = f"#{d.get('driver_number')}"
         drivers.append(DriverSpec(
-            driver=str(d.get("driver_number")),
+            driver=name,
             base_pace_s=base,
             start_compound=compound,
             strategy=[],

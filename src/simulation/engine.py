@@ -54,7 +54,10 @@ MODELS_DIR   = PROJECT_ROOT / "models"
 REPORTS_DIR  = PROJECT_ROOT / "reports" / "simulation"
 REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 
-COMPOUNDS: Final[list[str]] = ["SOFT", "MEDIUM", "HARD"]
+# Indices 0/1/2 are S/M/H and MUST stay fixed — dry rollouts are byte-for-byte
+# unchanged. INTERMEDIATE/WET are appended so wet stints use their own curve
+# instead of being silently treated as MEDIUM.
+COMPOUNDS: Final[list[str]] = ["SOFT", "MEDIUM", "HARD", "INTERMEDIATE", "WET"]
 
 # Per-lap overtake probability when within striking distance, by circuit class.
 OVERTAKE_PROB: Final[dict[str, float]] = {"street": 0.08, "medium": 0.20, "power": 0.30}
@@ -99,10 +102,12 @@ def circuit_class(circuit: str) -> str:
 
 
 def _comp_idx(compound: str) -> int:
-    """Compound index into COMPOUNDS, defaulting to MEDIUM for non-slicks/unknowns.
+    """Compound index into COMPOUNDS, defaulting to MEDIUM for truly unknown strings.
 
-    Live feeds can report INTERMEDIATE/WET; wet running is out of scope (the tyre
-    curves are slick-only), so we fall back to MEDIUM rather than crash mid-race.
+    All five known compounds (SOFT/MEDIUM/HARD/INTERMEDIATE/WET) map to their own
+    index, so a wet stint uses the wet degradation curve. The MEDIUM fallback now
+    fires only for an unrecognised compound string (e.g. a malformed live feed),
+    never for INTERMEDIATE/WET.
     """
     try:
         return COMPOUNDS.index(compound)

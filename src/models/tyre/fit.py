@@ -24,9 +24,15 @@ regimes are reported honestly — never false precision.
 
 Scope
 -----
-Slick compounds only (SOFT/MEDIUM/HARD). INTERMEDIATE/WET running is dominated
-by track-condition evolution (a drying track makes laps FASTER with age), so a
-monotone degradation curve is the wrong model — documented out of scope.
+All five compounds: slicks (SOFT/MEDIUM/HARD) plus wets (INTERMEDIATE/WET).
+The slick fits are unchanged. The wet compounds are SPARSE (intermediate is
+fittable per compound/era; wet running is only ~19 stints total), and wet pace is
+also confounded by track-condition evolution (a drying track makes laps FASTER
+with age), so wet curves are pooled aggressively — typically a single
+per-compound fit shared across every circuit and era — and carry honestly wide
+CIs. predict_degradation guarantees a finite (mid, lo, hi) for any of the five
+compounds at any (circuit, era), backing off to a built-in wet fallback if even
+the global pool is too thin. See WET_FALLBACK below.
 Green-flag laps only (TrackStatus == "1"): SC/VSC laps are +20-40s outliers that
 destroy the fit.
 
@@ -71,10 +77,26 @@ REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 EXPERIMENT_NAME: Final[str] = "tyre_degradation"
 
 SLICK_COMPOUNDS: Final[list[str]] = ["SOFT", "MEDIUM", "HARD"]
+# Wet compounds are sparse and pooled aggressively (see fit_all_curves).
+WET_COMPOUNDS:   Final[list[str]] = ["INTERMEDIATE", "WET"]
+ALL_COMPOUNDS:   Final[list[str]] = SLICK_COMPOUNDS + WET_COMPOUNDS
+
+# Built-in last-resort wet curve, used only when a wet compound has too little
+# data to fit even a global pool. delta(age) = b·(age−age0) + c·(age²−age0²).
+# Intentionally gentle slopes with WIDE CIs — wet pace is dominated by track
+# evolution, not tyre wear, so we assert little and report large uncertainty.
+WET_FALLBACK: Final[dict[str, dict[str, float]]] = {
+    "INTERMEDIATE": {"b": 0.05, "c": 0.0015, "b_ci": 0.06, "c_ci": 0.003},
+    "WET":          {"b": 0.04, "c": 0.0010, "b_ci": 0.08, "c_ci": 0.004},
+}
 
 # Pooling thresholds: minimum stints to trust a fit at each level
 MIN_STINTS_CIRCUIT: Final[int] = 5    # (compound × circuit × era)
 MIN_STINTS_POOLED:  Final[int] = 8    # (compound × era) and (compound)
+# Wet running is rare; allow a global per-compound pool to form from fewer stints
+# than the slick threshold so INTERMEDIATE/WET always get a real fitted curve
+# before the built-in fallback is ever needed.
+MIN_STINTS_WET_POOLED: Final[int] = 4
 MIN_LAPS_PER_STINT: Final[int] = 5    # need enough points for curvature
 MAX_ABS_DELTA:      Final[float] = 8.0  # s — outlier guard (traffic, mistakes)
 CI_LEVEL:           Final[float] = 0.95
@@ -125,15 +147,21 @@ def degradation_model_temp(
 # Stint preparation
 # ---------------------------------------------------------------------------
 
-def prepare_stint_laps(df: pd.DataFrame) -> pd.DataFrame:
-    """Green-flag slick laps with fuel-corrected per-stint deltas.
+def prepare_stint_laps(df: pd.DataFrame, compounds: list[str] | None = None) -> pd.DataFrame:
+    """Green-flag laps with fuel-corrected per-stint deltas.
 
     Adds columns: FuelCorrected, Age0 (stint's first observed TyreLife),
     Delta (fuel-corrected delta vs the stint baseline lap).
     Keeps only stints with >= MIN_LAPS_PER_STINT green laps.
+
+    ``compounds`` selects which compounds to keep (default: all five — slicks and
+    wets). Each compound is processed independently per stint, so widening the set
+    leaves the slick rows numerically identical to a slick-only run.
     """
+    if compounds is None:
+        compounds = ALL_COMPOUNDS
     d = df.copy()
-    d = d[d["Compound"].isin(SLICK_COMPOUNDS)]
+    d = d[d["Compound"].isin(compounds)]
     d = d[d["TrackStatus"].astype(str) == "1"]
 
     # Remove the estimated fuel effect so the remaining trend is tyre, not fuel.
@@ -205,13 +233,36 @@ def fit_cell(cell_df: pd.DataFrame) -> dict | None:
 # Hierarchical fitting
 # ---------------------------------------------------------------------------
 
+def _pooled_threshold(comp: str) -> int:
+    """Minimum stints to trust a pooled (era / compound) fit for this compound.
+
+    Wet compounds are rare, so they use a lower bar — otherwise a thin but real
+    wet pool would be discarded in favour of the synthetic fallback.
+    """
+    return MIN_STINTS_WET_POOLED if comp in WET_COMPOUNDS else MIN_STINTS_POOLED
+
+
+def _wet_fallback_fit(comp: str) -> dict:
+    """Built-in synthetic fit for a wet compound with too little data to model."""
+    fb = WET_FALLBACK[comp]
+    return {
+        "b": fb["b"], "c": fb["c"], "b_ci": fb["b_ci"], "c_ci": fb["c_ci"],
+        "r2": 0.0, "n_stints": 0, "n_laps": 0,
+    }
+
+
 def fit_all_curves(stint_laps: pd.DataFrame) -> pd.DataFrame:
     """Fit every (compound × circuit × era) cell with hierarchical pooling.
 
     For each cell present in the data, use the deepest level with enough stints:
         circuit  : that exact (compound, circuit, era)      >= MIN_STINTS_CIRCUIT
-        era      : all circuits for (compound, era)          >= MIN_STINTS_POOLED
-        compound : all eras+circuits for compound             >= MIN_STINTS_POOLED
+        era      : all circuits for (compound, era)          >= pooled threshold
+        compound : all eras+circuits for compound            >= pooled threshold
+    Wet compounds (INTERMEDIATE/WET) additionally get a GLOBAL fallback row
+    (CircuitKey="*", Era=-1) so predict_degradation always resolves them for any
+    circuit/era — using the global per-compound fit when one exists, else the
+    built-in WET_FALLBACK. They never produce a "no usable fit" gap.
+
     Returns one row per cell: Compound, CircuitKey, Era, pool_level, b, c, CIs,
     r2, n_stints, n_laps (counts are from the pool actually fitted).
     """
@@ -219,12 +270,12 @@ def fit_all_curves(stint_laps: pd.DataFrame) -> pd.DataFrame:
     era_fits: dict[tuple[str, int], dict | None] = {}
     for (comp, era), g in stint_laps.groupby(["Compound", "Era"]):
         f = fit_cell(g)
-        era_fits[(comp, int(era))] = f if f and f["n_stints"] >= MIN_STINTS_POOLED else None
+        era_fits[(comp, int(era))] = f if f and f["n_stints"] >= _pooled_threshold(comp) else None
 
     compound_fits: dict[str, dict | None] = {}
     for comp, g in stint_laps.groupby("Compound"):
         f = fit_cell(g)
-        compound_fits[comp] = f if f and f["n_stints"] >= MIN_STINTS_POOLED else None
+        compound_fits[comp] = f if f and f["n_stints"] >= _pooled_threshold(comp) else None
 
     rows = []
     cells = stint_laps.groupby(["Compound", "CircuitKey", "Era"])
@@ -239,12 +290,28 @@ def fit_all_curves(stint_laps: pd.DataFrame) -> pd.DataFrame:
             fit, level = era_fits[(comp, era)], "era"
         elif compound_fits.get(comp) is not None:
             fit, level = compound_fits[comp], "compound"
+        elif comp in WET_COMPOUNDS:
+            # Sparse wet cell with no pool deep enough — synthesise a curve so the
+            # cell still exists rather than vanishing (never silently → MEDIUM).
+            fit, level = _wet_fallback_fit(comp), "wet_fallback"
         else:
             logger.warning("No usable fit at any level: %s × %s × Era%d", comp, circuit, era)
             continue
 
         rows.append({
             "Compound": comp, "CircuitKey": circuit, "Era": era,
+            "pool_level": level, **fit,
+        })
+
+    # Guaranteed global wet rows so ANY (circuit, era) query for a wet compound
+    # resolves — including eras/circuits that never saw wet running.
+    for comp in WET_COMPOUNDS:
+        if compound_fits.get(comp) is not None:
+            fit, level = compound_fits[comp], "compound_global"
+        else:
+            fit, level = _wet_fallback_fit(comp), "wet_fallback_global"
+        rows.append({
+            "Compound": comp, "CircuitKey": "*", "Era": -1,
             "pool_level": level, **fit,
         })
 
@@ -382,6 +449,9 @@ def predict_degradation(
 
     Looks up the cell row (already pool-resolved by fit_all_curves); falls back
     to the closest available row for the compound if the exact cell is missing.
+    For wet compounds (INTERMEDIATE/WET) it never raises: if the table has no row
+    for the compound at all, the built-in WET_FALLBACK curve is used so the caller
+    always gets a finite, sensible band.
 
     If ``track_temp`` is given AND the curves carry Phase-9 temperature columns
     (temp_ref / b_temp / c_temp), the central slope/curvature are adjusted by
@@ -402,6 +472,17 @@ def predict_degradation(
     if sel.empty:
         sel = curves[curves["Compound"] == compound]
     if sel.empty:
+        if compound in WET_COMPOUNDS:
+            # No row at all for a known wet compound — use the built-in fallback
+            # so we never crash a (possibly wet) race mid-simulation.
+            fb = WET_FALLBACK[compound]
+            row = pd.Series({**fb, "temp_ref": np.nan, "b_temp": 0.0, "c_temp": 0.0})
+            age = np.asarray(age, dtype=float)
+            return (
+                degradation_delta(fb["b"], fb["c"], age),
+                degradation_delta(fb["b"] - fb["b_ci"], fb["c"] - fb["c_ci"], age),
+                degradation_delta(fb["b"] + fb["b_ci"], fb["c"] + fb["c_ci"], age),
+            )
         raise KeyError(f"No tyre curve for compound={compound}")
 
     row = sel.iloc[0]
@@ -512,9 +593,10 @@ def fit() -> pd.DataFrame:
     df = load_tft_data()      # per-round glob + dedup + StintID/TrackStatus carry-back
     stint_laps = prepare_stint_laps(df)
     logger.info(
-        "Prepared %d green slick laps in %d stints (%d circuits, eras %s)",
+        "Prepared %d green laps in %d stints (%d circuits, eras %s) | by compound: %s",
         len(stint_laps), stint_laps.groupby(STINT_KEYS).ngroups,
         stint_laps["CircuitKey"].nunique(), sorted(stint_laps["Era"].unique()),
+        stint_laps["Compound"].value_counts().to_dict(),
     )
 
     curves = fit_all_curves(stint_laps)
@@ -540,7 +622,7 @@ def fit() -> pd.DataFrame:
         mlflow.log_params({
             "model": "quadratic_delta_curvefit",
             "fuel_corrected": True, "green_flag_only": True,
-            "compounds": ",".join(SLICK_COMPOUNDS),
+            "compounds": ",".join(ALL_COMPOUNDS),
             "min_stints_circuit": MIN_STINTS_CIRCUIT,
             "min_stints_pooled": MIN_STINTS_POOLED,
             "min_laps_per_stint": MIN_LAPS_PER_STINT,
